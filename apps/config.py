@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     app_env: str = "development"
-    database_url: str = "postgresql+psycopg://radar:change-me@localhost:5432/radar"
+    database_url: str = "postgresql+psycopg://radar:change-me@127.0.0.1:15432/radar"
     discord_token: str | None = None
     discord_guild_id: int = 1530072733818556538
     discord_sale_new_channel_id: int = 1530073991442595880

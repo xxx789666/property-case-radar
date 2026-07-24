@@ -325,9 +325,9 @@ handled by anything in this repository or its automation):
    (`bootstrap_read_only_role.sql` refuses to run at all -- via its own
    `\if :{?ro_password}` check -- if `-v ro_password=...` is omitted, so
    there is no way to accidentally apply it without a real password.)
-5. Edit `openab/gateway/config-radar-agent.toml`'s `allowed_users` to the
-   guild's actual approved member ID list -- `runtime_config.py` refuses
-   to start the gateway while this is empty.
+5. Confirm `openab/gateway/config-radar-agent.toml`'s `allowed_users`
+   remains the bounded-REST-verified guild allowlist. `runtime_config.py`
+   refuses to start the gateway if this list is empty or malformed.
 6. `docker compose --profile openab build openab-gateway openab-sidecar`,
    then one-time Codex ChatGPT/API auth in its own dedicated volume:
 

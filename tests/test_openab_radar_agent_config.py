@@ -24,6 +24,7 @@ SIDECAR_DIR = OPENAB_DIR / "sidecar"
 CONFIG_TEMPLATE_PATH = GATEWAY_DIR / "config-radar-agent.toml"
 
 EXPECTED_ALLOWED_CHANNELS = {"1530076451242508318", "1530076529751756870"}
+EXPECTED_ALLOWED_USERS = ["843428445802725388"]
 
 
 def _load_runtime_config_module():
@@ -47,7 +48,7 @@ def template_text() -> str:
 
 
 def _filled_template(template_text: str) -> str:
-    return template_text.replace("allowed_users = [\n]", 'allowed_users = [\n  "843428445802725388",\n]')
+    return template_text
 
 
 # --- template structure -----------------------------------------------
@@ -59,9 +60,7 @@ def test_committed_template_is_valid_toml_with_no_leaked_secret(template_text: s
     assert discord_cfg["bot_token"] == "${OPENAB_DISCORD_BOT_TOKEN}"
     assert set(discord_cfg["allowed_channels"]) == EXPECTED_ALLOWED_CHANNELS
     assert discord_cfg["allow_dm"] is False
-    # Ships empty on purpose -- the operator must fill this in, and
-    # runtime_config.py refuses to start OpenAB while it's empty (see below).
-    assert discord_cfg["allowed_users"] == []
+    assert discord_cfg["allowed_users"] == EXPECTED_ALLOWED_USERS
     assert parsed["pool"]["max_sessions"] == 1
 
 
@@ -109,8 +108,9 @@ def test_runtime_config_rejects_token_with_whitespace(rc, template_text: str) ->
 
 
 def test_runtime_config_rejects_empty_allowed_users(rc, template_text: str) -> None:
+    empty = template_text.replace('  "843428445802725388",\n', "")
     with pytest.raises(rc.ConfigError, match="allowed_users must be a non-empty allowlist"):
-        rc.render_config_text(template_text, token="fake-token-for-offline-render-test")
+        rc.render_config_text(empty, token="fake-token-for-offline-render-test")
 
 
 def test_runtime_config_accepts_a_correctly_filled_template(rc, template_text: str) -> None:
@@ -140,7 +140,7 @@ def test_runtime_config_rejects_allow_dm_true(rc, template_text: str) -> None:
 
 
 def test_runtime_config_rejects_non_numeric_allowed_user(rc, template_text: str) -> None:
-    bad = template_text.replace("allowed_users = [\n]", 'allowed_users = [\n  "not-a-snowflake",\n]')
+    bad = template_text.replace("843428445802725388", "not-a-snowflake")
     with pytest.raises(rc.ConfigError, match="numeric Discord user ID"):
         rc.render_config_text(bad, token="fake-token-for-offline-render-test")
 

@@ -71,6 +71,37 @@ Bot 只要求 guild 權限，不啟用 message content intent。單一 bot proce
 本輪不執行 Discord live smoke。部署窗口可在只有一個 bot process 時設定 token
 後執行上述 bot 指令，確認 `/house latest` 與 `/auction latest`。
 
+## Production RadarBot container
+
+The opt-in `radarbot` Compose profile runs only the deterministic Discord
+slash-command process. It never starts `apps.scheduler.main` or a crawler.
+The container is non-root, read-only, capability-free, attached only to the
+internal `radar-db-net` and its dedicated `radar-bot-egress`, and receives
+both credentials as file-based Docker secrets:
+
+- `openab/.local/discord_commands_bot_token`: the separate Commands bot token.
+- `openab/.local/radarbot_database_url`: an internal
+  `postgresql+psycopg://radar_bot_app:...@postgres:5432/radar` DSN.
+
+Create/update `radar_bot_app` with
+`deploy/radarbot/bootstrap_app_role.sql`, passing a cryptographically random
+password through the required psql `app_password` variable, then write the
+matching DSN directly to the gitignored secret file without printing it.
+The role may read and mutate existing application tables/sequences but has
+no database/schema CREATE or TEMP privilege; Alembic remains a separate
+operator action.
+
+```powershell
+docker compose --profile radarbot build radarbot
+docker compose --profile radarbot up -d radarbot
+docker compose --profile radarbot ps
+```
+
+The service becomes healthy only after Discord login, successful guild
+sync, and an exact local command contract check (`/house`: 6 subcommands,
+`/auction`: 7 subcommands). The readiness record contains IDs/counts only,
+never either secret.
+
 ## `/house` 指令
 
 - `/house search`：城市、行政區、總價、坪數、屋齡、折價率篩選

@@ -6,7 +6,10 @@ services:
       POSTGRES_USER: radar
       POSTGRES_PASSWORD: change-me
     ports:
-      - "5432:5432"
+      # Host 5432 is commonly occupied by another local PostgreSQL.
+      # Keep the container port standard and give this project a dedicated
+      # host port so Alembic and the host-run RadarBot cannot hit another DB.
+      - "127.0.0.1:15432:5432"
     volumes:
       - radar-postgres:/var/lib/postgresql/data
     healthcheck:
@@ -20,6 +23,51 @@ services:
       # processes already use -- never from the gateway container, which
       # is not attached to this network at all.
       - radar-db-net
+
+  # Long-running deterministic slash-command bot only. This service never
+  # starts apps.scheduler.main or any crawler entrypoint.
+  radarbot:
+    profiles: ["radarbot"]
+    image: radarbot:dev
+    build:
+      context: .
+      dockerfile: deploy/radarbot/Dockerfile
+    container_name: radarbot
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      # Project PostgreSQL is reachable only by its Compose DNS name and
+      # internal container port; no host PostgreSQL can be selected.
+      radar-db-net:
+      # Dedicated Discord egress, not shared with either OpenAB trust
+      # domain.
+      radar-bot-egress:
+    user: "1002:1002"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:size=32m,mode=1777,uid=1002,gid=1002
+      - /run/radarbot:size=1m,mode=0700,uid=1002,gid=1002
+    environment:
+      - DISCORD_TOKEN_SECRET_FILE=/run/secrets/discord_commands_bot_token
+      - DATABASE_URL_SECRET_FILE=/run/secrets/radarbot_database_url
+      - RADARBOT_READY_FILE=/run/radarbot/ready.json
+    secrets:
+      - source: discord_commands_bot_token
+        target: discord_commands_bot_token
+        uid: "1002"
+        gid: "1002"
+        mode: 0400
+      - source: radarbot_database_url
+        target: radarbot_database_url
+        uid: "1002"
+        gid: "1002"
+        mode: 0400
 
   # ---------------------------------------------------------------------
   # Discord LLM interaction layer (OpenAB 0.10.0-beta.2 + Codex ACP), split
@@ -172,6 +220,7 @@ networks:
         - subnet: 172.28.238.0/24
   radar-db-net:
     internal: true
+  radar-bot-egress: {}
   radar-gateway-egress: {}
   radar-sidecar-egress: {}
 
@@ -186,3 +235,7 @@ secrets:
     file: ./openab/.local/openab_discord_bot_token
   radar_agent_database_url:
     file: ./openab/.local/radar_agent_database_url
+  discord_commands_bot_token:
+    file: ./openab/.local/discord_commands_bot_token
+  radarbot_database_url:
+    file: ./openab/.local/radarbot_database_url

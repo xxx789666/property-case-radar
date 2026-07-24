@@ -41,12 +41,11 @@ allowed_channels = [
 # own channel scoping.
 allow_dm = false
 
-# REQUIRED before first deploy: replace with the guild's actual member
-# allowlist (Discord user ID snowflakes as strings). Left empty here
-# deliberately -- runtime_config.py fails closed (refuses to start OpenAB)
-# on an empty list rather than silently defaulting to "every member of
-# these two channels may use the agent". See openab/README.md.
+# Sole non-bot guild member verified through the bounded Discord REST
+# bootstrap check. runtime_config.py still fails closed if this becomes
+# empty rather than silently defaulting to every channel member.
 allowed_users = [
+  "843428445802725388",
 ]
 
 [agent]
