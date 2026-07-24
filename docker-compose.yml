@@ -14,6 +14,175 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      # Reachable only from the sidecar (see radar-db-net below) plus the
+      # published host port the main, non-containerized app/scheduler/API
+      # processes already use -- never from the gateway container, which
+      # is not attached to this network at all.
+      - radar-db-net
+
+  # ---------------------------------------------------------------------
+  # Discord LLM interaction layer (OpenAB 0.10.0-beta.2 + Codex ACP), split
+  # across two containers per the security review: the GATEWAY holds only
+  # the Discord token and never a database credential or Codex auth; the
+  # SIDECAR holds only Codex auth + a dedicated read-only database secret
+  # and never the Discord token. They talk over exactly one internal-only
+  # network carrying nothing but the ACP JSON-RPC relay (see
+  # openab/gateway/bridge-client.mjs / openab/sidecar/bridge-server.mjs).
+  # Opt-in profile: `docker compose up -d postgres` (the default, no args)
+  # never starts either service. See openab/README.md before ever running
+  # this with real secrets.
+  openab-sidecar:
+    profiles: ["openab"]
+    image: radar-sidecar:dev
+    build:
+      context: .
+      dockerfile: openab/sidecar/Dockerfile.sidecar
+    container_name: openab-sidecar
+    restart: unless-stopped
+    networks:
+      # ACP bridge traffic from the gateway -- no other member, no
+      # external route. Pinned to a static address on this network (see
+      # the network's own ipam block below) so bridge-server.mjs can bind
+      # its ACP listener to this exact IP instead of 0.0.0.0 -- otherwise
+      # the listener would be reachable from every network this container
+      # is attached to (radar-db-net, radar-sidecar-egress included, not
+      # only the internal bridge), which a hardened review probe attached
+      # only to radar-db-net previously confirmed by successfully
+      # connecting to and completing an ACP round-trip over it.
+      radar-internal-bridge:
+        ipv4_address: 172.28.238.10
+      # Database traffic to postgres -- no other member, no external
+      # route (Codex's own model/auth API calls go out via
+      # radar-sidecar-egress below instead, kept as a separate network so
+      # this one can stay internal-only).
+      radar-db-net:
+      # Outbound-only network for whatever Codex itself needs (ChatGPT/
+      # OpenAI API calls) -- "sidecar若需模型/auth網路僅最小必要": this is
+      # the one place that minimal necessary egress lives, isolated from
+      # both the DB and bridge networks and from the gateway entirely.
+      radar-sidecar-egress:
+    # Distinct from the gateway's uid 1000 -- see Dockerfile.sidecar's own
+    # comment on why the two trust domains must not additionally share a UID.
+    user: "1001:1001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      # uid=1001,gid=1001 is required, not cosmetic: an unqualified tmpfs
+      # mount defaults to root:root ownership, which this container (no
+      # root at any point) could not read/write at all.
+      - /tmp:size=64m,mode=1777,uid=1001,gid=1001
+      - /home/sidecar/.openab:size=8m,mode=0700,uid=1001,gid=1001
+    environment:
+      - ACP_SIDECAR_LISTEN_PORT=8765
+      # The container's own static address on radar-internal-bridge
+      # (matching the ipv4_address above), never 0.0.0.0 -- binding to
+      # this specific address means the ACP listener simply does not
+      # exist from the perspective of any other network this container is
+      # attached to (a real bind()-level restriction, not a firewall
+      # rule), so radar-db-net/radar-sidecar-egress peers get connection
+      # refused/no route rather than reaching the listener.
+      - ACP_SIDECAR_LISTEN_HOST=172.28.238.10
+    # File-based Docker secret, not an environment variable -- see
+    # openab/README.md's "security review history" for why a container's
+    # own env vars become part of PID 1's immutable /proc/1/environ.
+    # bridge-server.mjs reads this file directly and only ever places its
+    # contents into each spawned codex-acp child's own env, never its own.
+    secrets:
+      - source: radar_agent_database_url
+        target: radar_agent_database_url
+        uid: "1001"
+        gid: "1001"
+        mode: 0400
+    volumes:
+      # Dedicated Codex/ChatGPT OAuth state -- never shared with any other
+      # service or credential. Dockerfile.sidecar pre-creates and chowns
+      # this path to uid/gid 1001 at build time, so a fresh named volume
+      # inherits that ownership on first mount -- no manual
+      # `docker run --user root ... chown` step needed at deploy time.
+      - radar-agent-codex-state:/home/sidecar/.codex
+
+  openab-gateway:
+    profiles: ["openab"]
+    image: radar-gateway:dev
+    build:
+      context: .
+      dockerfile: openab/gateway/Dockerfile.gateway
+    container_name: openab-gateway
+    restart: unless-stopped
+    depends_on:
+      - openab-sidecar
+    networks:
+      # ACP bridge traffic to the sidecar -- no other member, no external
+      # route. Notably NOT attached to radar-db-net, so this container has
+      # no network path to postgres at all, regardless of what
+      # credentials it might somehow obtain.
+      radar-internal-bridge:
+      # Outbound-only network for Discord -- "只有 gateway 可出站
+      # Discord": this is the one network this whole stack uses for
+      # Discord connectivity, and only the gateway is ever attached to it.
+      radar-gateway-egress:
+    user: "1000:1000"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:size=64m,mode=1777,uid=1000,gid=1000
+      - /run/radar-agent:size=1m,mode=0700,uid=1000,gid=1000
+      - /home/node/.openab:size=8m,mode=0700,uid=1000,gid=1000
+    environment:
+      # Plain, non-secret configuration (the sidecar's address on the
+      # internal bridge network) -- expanded natively by OpenAB itself
+      # from its own process environment; see
+      # openab/gateway/config-radar-agent.toml's [agent] section.
+      - ACP_SIDECAR_HOST=openab-sidecar
+      - ACP_SIDECAR_PORT=8765
+    secrets:
+      - source: openab_discord_bot_token
+        target: openab_discord_bot_token
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+    volumes:
+      - ./openab/gateway/config-radar-agent.toml:/etc/openab/config.toml:ro
 
 volumes:
   radar-postgres:
+  radar-agent-codex-state:
+
+networks:
+  # internal: true means Docker gives this network no route to anything
+  # outside itself (not the host's other networks, not the internet) --
+  # only services explicitly attached to it can ever reach each other over
+  # it, and only these two services are ever attached to it.
+  radar-internal-bridge:
+    internal: true
+    # A fixed subnet is required so the sidecar service above can be
+    # given a static ipv4_address -- bridge-server.mjs binds its ACP
+    # listener to that exact address (never 0.0.0.0), which is what keeps
+    # it unreachable from this container's other networks. This is a
+    # small dedicated subnet reserved by convention for this project
+    # (172.28.238.0/24, the same "documentation-adjacent" default Compose
+    # itself tends to pick) -- if it collides with another Docker network
+    # already on the host, change both this subnet and the sidecar's
+    # ipv4_address/ACP_SIDECAR_LISTEN_HOST together.
+    ipam:
+      config:
+        - subnet: 172.28.238.0/24
+  radar-db-net:
+    internal: true
+  radar-gateway-egress: {}
+  radar-sidecar-egress: {}
+
+secrets:
+  # Files, not env_file entries -- see the services' `secrets:` comments
+  # above for why. Neither file exists in this repo; `docker compose
+  # config`/the default `postgres`-only profile still validate fine
+  # without them (Compose only resolves a file-based secret's source at
+  # actual container-start time), and bootstrap (openab/README.md) must
+  # create both, gitignored, before these services can start.
+  openab_discord_bot_token:
+    file: ./openab/.local/openab_discord_bot_token
+  radar_agent_database_url:
+    file: ./openab/.local/radar_agent_database_url

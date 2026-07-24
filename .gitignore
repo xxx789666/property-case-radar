@@ -5,3 +5,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+
+# OpenAB Discord LLM bridge secrets -- never the app's own .env, never
+# committed. See openab/README.md.
+openab/.local/

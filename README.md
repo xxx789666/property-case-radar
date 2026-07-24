@@ -90,6 +90,19 @@ Bot 只要求 guild 權限，不啟用 message content intent。單一 bot proce
 - `/auction risk`：點交／產權風險評分
 - `/auction unsubscribe`：取消自己的訂閱
 
+## Discord LLM 互動層（選用，預設不啟動）
+
+`openab/` 提供以 OpenAB 0.10.0-beta.2 + Codex ACP 為基礎的自然語言問答層，
+限定在 `/house`、`/auction search` 使用的同兩個私人頻道，讀取 Radar 資料庫
+（唯讀，`tools/radar_agent_query.py`）。**必須使用第二個獨立 Discord bot／
+token**，不得與本節上方的 `DISCORD_TOKEN`／RadarBot 共用（同一 token 開兩個
+Gateway session 不是 Discord 支援的用法）。詳見 `openab/README.md`（架構、
+token 邊界、頻道白名單、機密管理、版本鎖定、bootstrap 步驟、離線驗證指令）。
+2026-07-24 的 bounded live Discord smoke 已確認獨立 bot 可登入，且 `/house`
+與 `/auction` 指令同步成功；但頻道 `1530076529751756870` 缺少
+`Send Messages` 權限，因此尚無法完成 in-channel 回覆驗證。此變更未修改
+Discord 權限，也未將任何真實 token 寫入 repository。
+
 ## 測試
 
 ```powershell

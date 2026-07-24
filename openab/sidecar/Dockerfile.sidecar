@@ -1,0 +1,130 @@
+# Property Case Radar Discord LLM bridge -- SIDECAR container. Runs
+# codex-acp (spawned per-connection by bridge-server.mjs) and
+# tools/radar_agent_query.py: holds Codex auth and the dedicated
+# read-only database secret, nothing else. This image never holds the
+# Discord token in any form -- see openab/gateway/Dockerfile.gateway for
+# the container that actually talks to Discord. Pinned by immutable
+# digest (resolved from ghcr.io/openabdev/openab:0.10.0-beta.2-codex on
+# 2026-07-24) so a registry retag or a later beta cannot silently change
+# what this container runs. Reused as the base here too (it already
+# bundles Node + codex-acp; OpenAB's own `openab` binary is simply never
+# invoked in this container).
+FROM ghcr.io/openabdev/openab@sha256:6e9c43e7acfa02f3886b22a209f1140842fc01807927b77a1f55cb0644393b9c
+
+# Build-time root is unrelated to runtime security (see the final USER
+# below: PID 1 (bridge-server.mjs) and every codex-acp session it spawns
+# run as this fixed unprivileged user for the container's entire
+# lifetime, reinforced at the Compose level by `user:`/`cap_drop: [ALL]`/
+# `no-new-privileges`/`read_only: true`).
+USER root
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Freeze the package archive to an exact historical snapshot instead of
+# whatever deb.debian.org happens to be serving on rebuild day -- this
+# base image's own /etc/apt/sources.list.d/debian.sources already records
+# (in a comment) which snapshot.debian.org timestamp deb.debian.org was
+# pointing to when the image was built. Also removes
+# /etc/apt/sources.list.d/github-cli.list (a live, non-snapshotted
+# cli.github.com source the base image ships alongside debian.sources --
+# confirmed by enumerating every file under /etc/apt on the base image);
+# this container has no use for the `gh` CLI at all. Check-Valid-Until is
+# disabled because a historical snapshot's Release file has, by
+# definition, already passed its original validity window. Verified with
+# a fresh `docker build --no-cache`: only the frozen snapshot remains as
+# an APT source, `apt-get update` against it completes in ~3 seconds, and
+# python3=3.13.5-1/python3-venv=3.13.5-1 install cleanly from it.
+RUN rm -f /etc/apt/sources.list.d/github-cli.list \
+    && sed -i \
+        -e 's|^URIs: http://deb.debian.org/debian$|URIs: http://snapshot.debian.org/archive/debian/20260713T000000Z|' \
+        -e 's|^URIs: http://deb.debian.org/debian-security$|URIs: http://snapshot.debian.org/archive/debian-security/20260713T000000Z|' \
+        /etc/apt/sources.list.d/debian.sources \
+    && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3=3.13.5-1 \
+        python3-venv=3.13.5-1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# A dedicated, distinct non-root user -- NOT the base image's "node" user
+# (uid/gid 1000), which the gateway container uses. Gateway and sidecar
+# hold disjoint credentials (Discord token vs. DB secret/Codex auth) and
+# must not additionally share a UID: a UID match would be one less
+# property standing between a filesystem/permission mixup on either side
+# and cross-container access to the other's material (e.g. if a bind
+# mount or volume were ever, even accidentally, made readable by "the
+# same uid" instead of "this specific container").
+RUN groupadd --gid 1001 sidecar \
+    && useradd --uid 1001 --gid sidecar --home-dir /home/sidecar --create-home \
+        --shell /usr/sbin/nologin --comment "radar-sidecar service account" sidecar
+ENV HOME=/home/sidecar
+
+RUN mkdir -p /opt/radar-agent /workspace/radar-agent \
+    # Runtime-writable paths for the non-root user this image always runs
+    # as -- Compose additionally mounts these as tmpfs so the rest of the
+    # root filesystem can stay read_only:true.
+    && install -d -o sidecar -g sidecar -m 0700 /run/radar-agent /home/sidecar/.openab \
+    # Codex/ChatGPT OAuth state: pre-create and chown at build time so a
+    # fresh named volume mounted here inherits sidecar:sidecar ownership on
+    # first use (a documented Docker behavior for empty named volumes) --
+    # no manual `docker run --user root ... chown` bootstrap step needed.
+    && install -d -o sidecar -g sidecar -m 0700 /home/sidecar/.codex
+
+# Hash-locked, minimal runtime: only sqlalchemy/psycopg/pydantic-settings --
+# deliberately NOT discord.py/fastapi/uvicorn/apscheduler/alembic/httpx/
+# beautifulsoup4. This container only ever opens a read-only database
+# session and formats query results; it never runs the crawler, scheduler,
+# API, or Discord bot code, and never talks to Discord at all (it has no
+# Discord token in any form -- see the gateway container for that).
+COPY openab/sidecar/requirements.lock /opt/radar-agent/requirements.lock
+RUN python3 -m venv /opt/radar-agent/venv \
+    && /opt/radar-agent/venv/bin/pip install --no-cache-dir --require-hashes -r /opt/radar-agent/requirements.lock
+ENV PATH="/opt/radar-agent/venv/bin:${PATH}"
+
+# The exact slice of Property Case Radar's own source this read-only tool
+# needs -- deliberately NOT apps/ (config.py's Settings carries a
+# write-capable development default DATABASE_URL this tool must never be
+# able to reach), NOT crawlers/ (only needed by the write-capable sale
+# repository), and NOT database/repositories/ (the write methods
+# themselves -- tools/radar_agent_query.py queries the ORM models directly
+# with its own read-only SELECT statements instead). Never notifications/
+# auction_notification.py either -- it imports discord.py and contains
+# live-send code, and this container must never gain any path to Discord.
+# Rebuilding this image after any of these files change is required --
+# there is no live bind mount of the app source.
+COPY --chown=sidecar:sidecar database/__init__.py /opt/radar-agent/property-case-radar/database/__init__.py
+COPY --chown=sidecar:sidecar database/session.py /opt/radar-agent/property-case-radar/database/session.py
+COPY --chown=sidecar:sidecar database/models/ /opt/radar-agent/property-case-radar/database/models/
+COPY --chown=sidecar:sidecar notifications/__init__.py /opt/radar-agent/property-case-radar/notifications/__init__.py
+COPY --chown=sidecar:sidecar notifications/auction_masking.py /opt/radar-agent/property-case-radar/notifications/auction_masking.py
+COPY --chown=sidecar:sidecar tools/__init__.py /opt/radar-agent/property-case-radar/tools/__init__.py
+COPY --chown=sidecar:sidecar tools/radar_agent_query.py /opt/radar-agent/property-case-radar/tools/radar_agent_query.py
+ENV PYTHONPATH="/opt/radar-agent/property-case-radar"
+
+COPY --chown=sidecar:sidecar openab/sidecar/bridge-server.mjs /opt/radar-agent/bridge-server.mjs
+COPY --chown=sidecar:sidecar openab/sidecar/AGENTS.md /workspace/radar-agent/AGENTS.md
+
+RUN chmod 0755 /opt/radar-agent/bridge-server.mjs \
+    && node --check /opt/radar-agent/bridge-server.mjs \
+    && python3 -m py_compile /opt/radar-agent/property-case-radar/tools/radar_agent_query.py \
+    && command -v codex-acp \
+    && command -v node
+
+# Overrides the upstream base image's own HEALTHCHECK (`pgrep -x openab`),
+# which this container would always fail -- PID 1 here is bridge-server.mjs,
+# never `openab` (that only runs in the gateway container). Reads PID 1's
+# own /proc/1/cmdline directly rather than issuing a TCP probe against the
+# ACP listener: a TCP-based check would itself count as a real inbound
+# connection to bridge-server.mjs, which unconditionally spawns a new
+# codex-acp session per connection (see handleConnection in
+# bridge-server.mjs) -- spawning one every health-check interval would be
+# wasteful and, without real Codex auth configured, would itself generate
+# spurious errors. Dependency-free (grep + /proc, no extra package).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["grep", "-q", "bridge-server.mjs", "/proc/1/cmdline"]
+
+# No root at any point during the container's actual runtime: this is a
+# dedicated, non-shared unprivileged user (uid/gid 1001, distinct from the
+# gateway container's uid 1000) both PID 1 (bridge-server.mjs) and every
+# codex-acp session it spawns run as.
+USER sidecar
+ENTRYPOINT ["node", "/opt/radar-agent/bridge-server.mjs"]

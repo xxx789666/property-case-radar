@@ -1,0 +1,10 @@
+# Minimal, read-only runtime for tools/radar_agent_query.py inside the
+# openab-sidecar container (never the gateway -- see openab/README.md's
+# two-container split). Deliberately excludes discord.py, fastapi,
+# uvicorn, apscheduler, alembic, beautifulsoup4, and httpx -- the sidecar
+# only ever opens a read-only DB session and formats query results; it
+# never runs the crawler, scheduler, API, or Discord bot code. Kept in
+# sync with the version ranges pinned in pyproject.toml.
+sqlalchemy>=2.0,<3
+psycopg[binary]>=3.2,<4
+pydantic-settings>=2.5,<3
