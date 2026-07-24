@@ -102,6 +102,39 @@ sync, and an exact local command contract check (`/house`: 6 subcommands,
 `/auction`: 7 subcommands). The readiness record contains IDs/counts only,
 never either secret.
 
+## Production official-data scheduler
+
+The opt-in `scheduler` profile is a separate hardened process. It downloads
+only the Ministry of the Interior's licensed current actual-price sales batch
+from `https://plvr.land.moi.gov.tw/opendata/lvr_landAcsv.zip`, identifies
+itself with a project User-Agent, limits requests to at most one per second,
+uses bounded retries/timeouts/size and record limits, and revalidates its
+private cache with ETag/Last-Modified. It aggregates current transactions into
+`market_prices`; full transaction addresses are not persisted by this adapter.
+
+The scheduler deliberately has no Discord secret, OpenAB/Codex state, Docker
+socket, or host bind mount. It is attached only to the internal project DB
+network and a dedicated HTTPS egress network:
+
+```powershell
+docker compose --profile scheduler build scheduler
+docker compose --profile scheduler up -d scheduler
+docker compose --profile scheduler ps
+```
+
+Live unattended auction crawling is currently fail-closed:
+
+- Judicial Yuan `aomp109.judicial.gov.tw/robots.txt` returns
+  `User-agent: *` and `Disallow: /`.
+- The approved official Ministry of Justice Administrative Enforcement
+  Agency replacement permits HTML in robots.txt, but `/Estate/Query` requires
+  a CAPTCHA for every fresh query.
+
+The code therefore does not solve/replay CAPTCHA values, submit controlled
+queries, or substitute 591/Sinyi/private realtor data. Auction fixtures remain
+test-only, and pending auction outbox rows are not drained by this scheduler
+until a compliant official current-auction feed is available and reviewed.
+
 ## `/house` 指令
 
 - `/house search`：城市、行政區、總價、坪數、屋齡、折價率篩選

@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     auction_high_score_threshold: int = Field(default=80, ge=0, le=100)
     auction_upcoming_within_days: int = Field(default=7, ge=1, le=30)
 
+    # Official MOI actual-price current-batch sync.  The Judicial Yuan
+    # endpoint is not configured here because its robots.txt disallows all
+    # crawling; the approved MOJ replacement requires CAPTCHA on every fresh
+    # query, so unattended auction crawling remains fail-closed.
+    market_sync_interval_hours: int = Field(default=24, ge=6, le=168)
+    moi_cache_dir: str = "/var/cache/radar-scheduler"
+
     @model_validator(mode="after")
     def validate_delay_range(self) -> "Settings":
         if self.crawler_max_delay_seconds < self.crawler_min_delay_seconds:

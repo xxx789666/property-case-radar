@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections.abc import Callable
-from pathlib import Path
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from sqlalchemy.orm import Session, sessionmaker
@@ -10,11 +10,9 @@ from apps.config import Settings, get_settings
 from apps.services.auction_notification_outbox import deliver_pending_notifications
 from apps.services.auction_notifier import live_auction_notifier
 from apps.services.auction_pipeline import ingest_auction_announcements
-from apps.services.sale_pipeline import ingest_sale_listings
-from crawlers.auction.court_crawler import AuctionAnnouncementSource, FixtureAuctionAnnouncementSource
+from crawlers.auction.court_crawler import AuctionAnnouncementSource
 from crawlers.auction.parser import CourtAnnouncementParser
-from crawlers.sale import FixtureSaleCrawler
-from database.models import Base
+from crawlers.transaction.moi_open_data import MoiActualPriceSource, sync_market_prices
 from database.session import create_db_engine, create_session_factory
 from notifications.auction_notification import AuctionNotificationRouter
 
@@ -49,6 +47,54 @@ def build_scheduler(
             replace_existing=True,
         )
     return scheduler
+
+
+def build_production_scheduler(
+    market_job: Callable[[], None],
+    market_interval_hours: int,
+) -> BlockingScheduler:
+    """Build the unattended production scheduler.
+
+    Only the official MOI current-batch job is registered.  Live auction
+    ingestion intentionally remains absent while every approved official
+    auction source requires either robots-prohibited access (Judicial Yuan)
+    or a CAPTCHA (MOJ Administrative Enforcement Agency).
+    """
+
+    scheduler = BlockingScheduler(timezone="Asia/Taipei")
+    scheduler.add_job(
+        market_job,
+        "interval",
+        hours=market_interval_hours,
+        id="market-price-sync",
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+        next_run_time=datetime.now(timezone.utc),
+    )
+    return scheduler
+
+
+def make_market_sync_job(
+    factory: sessionmaker[Session],
+    source: MoiActualPriceSource,
+) -> Callable[[], None]:
+    def run_market_sync() -> None:
+        with factory() as session:
+            result = asyncio.run(sync_market_prices(source, session))
+            logger.info(
+                "official MOI market sync finished: fetched=%s skipped=%s groups=%s "
+                "created=%s updated=%s unchanged=%s downloaded=%s",
+                result.fetched_records,
+                result.skipped_rows,
+                result.groups,
+                result.created,
+                result.updated,
+                result.unchanged,
+                result.downloaded,
+            )
+
+    return run_market_sync
 
 
 def make_auction_job(
@@ -123,31 +169,27 @@ def make_live_auction_job(
 
 
 def main() -> None:
+    """Run the production scheduler.
+
+    Fixture sale/auction composition remains available through the helpers
+    above for deterministic tests, but the long-running entrypoint uses only
+    the licensed official MOI download.  It does not crawl 591/Sinyi and it
+    does not attempt CAPTCHA/robots-prohibited auction sources.
+    """
+
     logging.basicConfig(level=logging.INFO)
     settings = get_settings()
     engine = create_db_engine(settings.database_url)
-    Base.metadata.create_all(engine)
     factory = create_session_factory(engine)
-
-    sale_fixture = Path("tests/fixtures/sale_listings.json")
-    sale_crawler = FixtureSaleCrawler(sale_fixture)
-
-    def run_sale_job() -> None:
-        with factory() as session:
-            result = asyncio.run(ingest_sale_listings(sale_crawler, session))
-            logger.info("sale crawl finished: %s", result)
-
-    auction_source = FixtureAuctionAnnouncementSource(Path("crawlers/auction/fixtures"))
-    auction_parser = CourtAnnouncementParser()
-    run_auction_job = make_live_auction_job(factory, auction_source, auction_parser, settings)
-
-    scheduler = build_scheduler(
-        run_sale_job,
-        settings.sale_crawl_interval_minutes,
-        auction_job=run_auction_job,
-        auction_interval_hours=settings.auction_crawl_interval_hours,
+    market_source = MoiActualPriceSource(cache_dir=settings.moi_cache_dir)
+    scheduler = build_production_scheduler(
+        make_market_sync_job(factory, market_source),
+        settings.market_sync_interval_hours,
     )
-    logger.info("scheduler started; sale source=offline fixture, auction source=offline fixture")
+    logger.info(
+        "scheduler started; market source=official MOI current sales Open Data; "
+        "live auction source disabled (robots/CAPTCHA controls)"
+    )
     scheduler.start()
 
 

@@ -69,6 +69,48 @@ services:
         gid: "1002"
         mode: 0400
 
+  # Official public-data scheduler only.  The production entrypoint syncs
+  # the current MOI actual-price Open Data batch and never starts the
+  # fixture sale crawler, Judicial Yuan crawler, 591/Sinyi, RadarBot, or
+  # any OpenAB/LLM process.  Live auction ingestion remains fail-closed:
+  # Judicial Yuan disallows all robots and the approved MOJ replacement
+  # requires a CAPTCHA for every fresh search.
+  scheduler:
+    profiles: ["scheduler"]
+    image: radar-scheduler:dev
+    build:
+      context: .
+      dockerfile: deploy/scheduler/Dockerfile
+    container_name: radar-scheduler
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      radar-db-net:
+      radar-scheduler-egress:
+    user: "1003:1003"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:size=32m,mode=1777,uid=1003,gid=1003
+      - /run/radar-scheduler:size=1m,mode=0700,uid=1003,gid=1003
+    environment:
+      - DATABASE_URL_SECRET_FILE=/run/secrets/radarbot_database_url
+      - SCHEDULER_READY_FILE=/run/radar-scheduler/ready.json
+      - MOI_CACHE_DIR=/var/cache/radar-scheduler
+    secrets:
+      - source: radarbot_database_url
+        target: radarbot_database_url
+        uid: "1003"
+        gid: "1003"
+        mode: 0400
+    volumes:
+      - radar-scheduler-cache:/var/cache/radar-scheduler
+
   # ---------------------------------------------------------------------
   # Discord LLM interaction layer (OpenAB 0.10.0-beta.2 + Codex ACP), split
   # across two containers per the security review: the GATEWAY holds only
@@ -198,6 +240,7 @@ services:
 volumes:
   radar-postgres:
   radar-agent-codex-state:
+  radar-scheduler-cache:
 
 networks:
   # internal: true means Docker gives this network no route to anything
@@ -221,6 +264,7 @@ networks:
   radar-db-net:
     internal: true
   radar-bot-egress: {}
+  radar-scheduler-egress: {}
   radar-gateway-egress: {}
   radar-sidecar-egress: {}
 

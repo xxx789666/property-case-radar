@@ -1,0 +1,6 @@
+鄉鎮市區,交易標的,交易年月日,總價元,單價元平方公尺,建物移轉總面積平方公尺,建物型態
+The villages and towns urban district,transaction sign,transaction year month and day,total price NTD,the unit price (NTD / square meter),building shifting total area,building state
+中正區,房地(土地+建物),1150701,18000000,200000,99.17355,住宅大樓(11層含以上有電梯)
+中正區,房地(土地+建物),1150702,24000000,250000,132.2314,辦公商業大樓
+中正區,土地,1150703,3000000,30000,0,其他
+中正區,房地(土地+建物),bad-date,1000000,10000,20,公寓(5樓含以下無電梯)
