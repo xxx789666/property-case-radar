@@ -6,7 +6,9 @@ from pathlib import Path
 from apscheduler.schedulers.blocking import BlockingScheduler
 from sqlalchemy.orm import Session, sessionmaker
 
-from apps.config import get_settings
+from apps.config import Settings, get_settings
+from apps.services.auction_notification_outbox import deliver_pending_notifications
+from apps.services.auction_notifier import live_auction_notifier
 from apps.services.auction_pipeline import ingest_auction_announcements
 from apps.services.sale_pipeline import ingest_sale_listings
 from crawlers.auction.court_crawler import AuctionAnnouncementSource, FixtureAuctionAnnouncementSource
@@ -57,21 +59,65 @@ def make_auction_job(
     liquidity_index: float = 0.5,
     notifier: AuctionNotificationRouter | None = None,
 ) -> Callable[[], None]:
-    """Build the APScheduler job callable for the auction crawl tick.
+    """Test/manual-composition auction job: ingest+queue, then (if
+    ``notifier`` is given) immediately attempt delivery of the outbox
+    with it.
 
-    Kept as its own function (rather than inlined in ``main()``) so tests
-    can construct one with a fake/mock ``notifier`` and a SQLite session
-    factory and exercise the real parser -> DB -> router wiring without
-    running APScheduler or a live bot -- see
-    ``tests/test_auction_pipeline_end_to_end.py``.
+    Takes a directly-injected router rather than building one itself --
+    handy for tests (a fake/mock router) or a future combined process
+    that already holds a live router open across ticks. See
+    ``make_live_auction_job`` for the production entrypoint that builds a
+    real-or-disabled notifier itself, fresh, every tick.
     """
 
-    def run_auction_job() -> None:
+    async def run_auction_cycle() -> None:
         with factory() as session:
-            result = asyncio.run(
-                ingest_auction_announcements(source, parser, session, liquidity_index=liquidity_index, notifier=notifier)
-            )
+            result = await ingest_auction_announcements(source, parser, session, liquidity_index=liquidity_index)
             logger.info("auction crawl finished: %s", result)
+            if notifier is not None:
+                report = await deliver_pending_notifications(session, notifier, liquidity_index=liquidity_index)
+                logger.info("auction notification delivery finished: %s", report)
+
+    def run_auction_job() -> None:
+        asyncio.run(run_auction_cycle())
+
+    return run_auction_job
+
+
+def make_live_auction_job(
+    factory: sessionmaker[Session],
+    source: AuctionAnnouncementSource,
+    parser: CourtAnnouncementParser,
+    settings: Settings,
+    *,
+    liquidity_index: float = 0.5,
+) -> Callable[[], None]:
+    """Production auction job: ingest+queue, then attempt delivery through
+    a real (or explicitly logged-and-disabled) Discord notifier built
+    fresh each tick via ``apps.services.auction_notifier.live_auction_notifier``.
+
+    This is the entrypoint ``main()`` actually uses. Unlike
+    ``make_auction_job``, it never hardcodes ``notifier=None`` --
+    whether live delivery happens each tick depends entirely on whether
+    ``settings.discord_token`` is configured and valid at that moment,
+    checked and logged explicitly every time (see
+    ``live_auction_notifier``'s docstring). A missing/invalid token never
+    stops ingestion -- announcements are still fetched, persisted, and
+    queued in the outbox regardless, waiting for a future run with a
+    working token to deliver them.
+    """
+
+    async def run_auction_cycle() -> None:
+        with factory() as session:
+            result = await ingest_auction_announcements(source, parser, session, liquidity_index=liquidity_index)
+            logger.info("auction crawl finished: %s", result)
+            async with live_auction_notifier(settings) as notifier:
+                if notifier is not None:
+                    report = await deliver_pending_notifications(session, notifier, liquidity_index=liquidity_index)
+                    logger.info("auction notification delivery finished: %s", report)
+
+    def run_auction_job() -> None:
+        asyncio.run(run_auction_cycle())
 
     return run_auction_job
 
@@ -93,17 +139,7 @@ def main() -> None:
 
     auction_source = FixtureAuctionAnnouncementSource(Path("crawlers/auction/fixtures"))
     auction_parser = CourtAnnouncementParser()
-    # `notifier=None`: this scheduler process has no live Discord
-    # connection of its own this round (see apps/discord_bot/main.py for
-    # the separate bot process, and CLAUDE.md/README for why live Discord
-    # is out of scope here). `ingest_auction_announcements` and
-    # `make_auction_job` fully support a real `AuctionNotificationRouter`
-    # -- wiring one up is just a matter of passing `notifier=` here once
-    # this process (or a future combined scheduler+bot process) has
-    # real channel handles. See
-    # tests/test_auction_pipeline_end_to_end.py for the parser -> DB ->
-    # router path exercised end-to-end with a fake router.
-    run_auction_job = make_auction_job(factory, auction_source, auction_parser, notifier=None)
+    run_auction_job = make_live_auction_job(factory, auction_source, auction_parser, settings)
 
     scheduler = build_scheduler(
         run_sale_job,

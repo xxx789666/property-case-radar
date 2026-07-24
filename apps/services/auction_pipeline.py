@@ -44,9 +44,9 @@ from database.models.auction import (
     AuctionStatusHistory,
     RoundResult,
 )
+from apps.services.auction_notification_outbox import queue_pending_notifications
 from database.models.common import MarketPrice
 from database.repositories.auction import AuctionRepository
-from notifications.auction_notification import AuctionNotificationRouter
 from scoring.auction_score import AuctionScore, risk_score_0_100, score_auction_case
 
 logger = logging.getLogger(__name__)
@@ -585,8 +585,7 @@ class IngestResult:
     created: int = 0
     status_changed: int = 0
     skipped_unchanged: int = 0
-    notified: int = 0
-    notify_failures: int = 0
+    notifications_queued: int = 0
 
 
 async def ingest_auction_announcements(
@@ -595,26 +594,33 @@ async def ingest_auction_announcements(
     session: Session,
     *,
     liquidity_index: float = 0.5,
-    notifier: AuctionNotificationRouter | None = None,
 ) -> IngestResult:
-    """Fetch, parse, and persist a batch of announcements, then (if ``notifier``
-    is given) push Discord notifications for whatever actually changed.
+    """Fetch, parse, and persist a batch of announcements, queuing a durable
+    outbox row (see ``apps.services.auction_notification_outbox``) for
+    every real, persisted change.
 
-    Notification delivery is strictly a post-commit side effect:
-    ``session.commit()`` happens before a single ``notifier`` call is
-    made, so a Discord/network failure can never roll back state that's
-    already durably persisted. Each notification attempt is wrapped
-    individually -- one failure is logged and counted in
-    ``IngestResult.notify_failures`` without aborting the rest of the
-    batch or raising out of this function (a scheduler job crashing on a
-    Discord hiccup would otherwise silently stop the whole crawl cycle).
+    This function does NOT deliver any Discord notification itself --
+    queuing (``queue_pending_notifications``) happens inside the same
+    transaction as the domain mutation it describes, ahead of this
+    function's single batch ``session.commit()``, so the pending
+    notification and the case data it's about are always committed
+    atomically. Call ``apps.services.auction_notification_outbox.
+    deliver_pending_notifications`` afterward (with a real or disabled
+    notifier -- see ``apps.services.auction_notifier``) to actually send;
+    that step is decoupled on purpose so a Discord outage or a crash
+    between commit and delivery can never lose or roll back the already-
+    persisted ingest results, and so leftover pending/failed rows from a
+    previous run are always retried by whichever process next calls
+    ``deliver_pending_notifications`` -- not just rows queued in this
+    call.
 
     Only outcomes that represent a *persisted, real* change (a newly
     created case, or an actual status transition) are queued for
     notification -- never a skipped-unchanged re-fetch or a same-status
-    no-op refresh -- so re-running this against an already-ingested batch
-    (e.g. the next scheduler tick re-fetching pages that haven't changed)
-    can never re-send the same notification twice.
+    no-op refresh -- and queuing itself dedupes on a unique
+    ``delivery_key``, so re-running this against an already-ingested
+    batch (e.g. the next scheduler tick re-fetching pages that haven't
+    changed) can never queue the same notification twice.
     """
     repository = AuctionRepository(session)
     raw_announcements = await source.fetch()
@@ -629,10 +635,7 @@ async def ingest_auction_announcements(
     created = 0
     status_changed = 0
     skipped = 0
-    # (case, status_event_or_None, rescore_result_or_None) -- event is
-    # None for a brand-new case (publish_new_case), set for a status
-    # transition on an existing case (publish_status_event).
-    to_notify: list[tuple[AuctionCase, AuctionStatusHistory | None, RescoreResult | None]] = []
+    notifications_queued = 0
 
     for raw, parsed in parsed_batch:
         outcome = ingest_auction_announcement(parsed, repository, fetched_at=raw.fetched_at)
@@ -643,42 +646,18 @@ async def ingest_auction_announcements(
         created += int(outcome.created)
         status_changed += int(outcome.status_changed)
         if outcome.created:
-            to_notify.append((outcome.case, None, rescore))
+            notifications_queued += queue_pending_notifications(session, outcome.case, None, rescore)
         elif outcome.status_changed:
-            to_notify.append((outcome.case, outcome.case.status_history[-1], rescore))
+            notifications_queued += queue_pending_notifications(
+                session, outcome.case, outcome.case.status_history[-1], rescore
+            )
 
     session.commit()
-
-    notified = 0
-    notify_failures = 0
-    if notifier is not None:
-        for case, event, rescore in to_notify:
-            try:
-                if event is None:
-                    if rescore is None:
-                        logger.info(
-                            "skipping new-case notification for %s %s: no regional market price available",
-                            case.court_name,
-                            case.case_number,
-                        )
-                        continue
-                    await notifier.publish_new_case(case, rescore.market_unit_price_twd, rescore.score)
-                else:
-                    await notifier.publish_status_event(case, event)
-                notified += 1
-            except Exception:  # noqa: BLE001 -- deliberately broad: any channel/network failure must not crash the crawl job
-                notify_failures += 1
-                logger.exception(
-                    "failed to publish auction notification for %s %s (state already committed; not retried this run)",
-                    case.court_name,
-                    case.case_number,
-                )
 
     return IngestResult(
         processed=len(raw_announcements),
         created=created,
         status_changed=status_changed,
         skipped_unchanged=skipped,
-        notified=notified,
-        notify_failures=notify_failures,
+        notifications_queued=notifications_queued,
     )

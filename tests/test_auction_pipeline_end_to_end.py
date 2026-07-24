@@ -16,11 +16,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from apps.scheduler.main import make_auction_job
+from apps.services.auction_notification_outbox import deliver_pending_notifications
 from apps.services.auction_pipeline import ingest_auction_announcement, ingest_auction_announcements
 from crawlers.auction.court_crawler import FixtureAuctionAnnouncementSource
 from crawlers.auction.parser import CourtAnnouncementParser
 from database.models.auction import AuctionStatus, RoundResult
-from database.models.common import MarketPrice
+from database.models.common import MarketPrice, NotificationLog
 from database.repositories.auction import AuctionRepository
 
 
@@ -91,16 +92,20 @@ async def test_notifier_receives_new_case_and_status_event_calls(session_factory
         parser = CourtAnnouncementParser()
         router = _make_router()
 
-        result = await ingest_auction_announcements(source, parser, session, notifier=router)
+        result = await ingest_auction_announcements(source, parser, session)
+        assert result.notifications_queued > 0
 
-        assert result.notify_failures == 0
+        report = await deliver_pending_notifications(session, router)
+
+        assert report.failed == 0
         # Only the 桃園 case has a seeded MarketPrice row, so its "new
-        # case" notification is the only one of the 4 created cases that
-        # can be built (build_new_case_notification requires a market
-        # price) -- the other 3 creations are silently skipped (logged,
-        # not an error). All 5 status-change events notify regardless,
-        # since build_status_update_notification never needs a score.
-        assert result.notified == 1 + result.status_changed
+        # case" event is the only one of the 4 created cases that gets
+        # queued at all (queue_pending_notifications skips queuing
+        # entirely when rescore_case can't find a market price) -- the
+        # other 3 creations queue nothing. All status-change events queue
+        # and deliver regardless, since build_status_update_notification
+        # never needs a score.
+        assert report.delivered == result.notifications_queued
         router.new_channel.send.assert_awaited()
 
 
@@ -112,21 +117,25 @@ async def test_notifier_failure_is_logged_not_raised_and_does_not_lose_committed
         router = _make_router()
         router.new_channel.send = AsyncMock(side_effect=RuntimeError("discord is down"))
 
-        result = await ingest_auction_announcements(source, parser, session, notifier=router)
+        result = await ingest_auction_announcements(source, parser, session)
+        assert result.created == 4  # DB writes happened regardless of delivery
 
-        # No exception propagated even though every "new" send raises.
-        assert result.notify_failures >= 1
-        assert result.created == 4  # DB writes happened regardless
-
-        # State is durably committed: fetch via a brand new session-like
-        # check (session_factory's session is still the same connection
-        # in this in-memory sqlite, but the point is the case data is
-        # queryable right now, proving commit() already ran before any
-        # notifier call).
+        # State is durably committed before any delivery attempt is even
+        # made -- ingestion's own commit() already ran.
         repo = AuctionRepository(session)
         case = repo.get_by_case_number("台北地方法院", "115年度司執字第67890號")
         assert case is not None
         assert case.status == AuctionStatus.AWARDED
+
+        # No exception propagated even though every "new" send raises.
+        report = await deliver_pending_notifications(session, router)
+        assert report.failed >= 1
+
+        # Failed rows stay "failed" (retryable), not lost.
+        failed_rows = session.query(NotificationLog).filter(NotificationLog.status == "failed").all()
+        assert len(failed_rows) == report.failed
+        assert all(row.attempt_count == 1 for row in failed_rows)
+        assert all(row.last_error and "discord is down" in row.last_error for row in failed_rows)
 
 
 @pytest.mark.asyncio
@@ -136,12 +145,20 @@ async def test_rerunning_ingest_does_not_resend_notifications(session_factory) -
         parser = CourtAnnouncementParser()
         router = _make_router()
 
-        first = await ingest_auction_announcements(source, parser, session, notifier=router)
-        assert first.notified > 0
+        first = await ingest_auction_announcements(source, parser, session)
+        assert first.notifications_queued > 0
+        first_report = await deliver_pending_notifications(session, router)
+        assert first_report.delivered > 0
         call_count_after_first = router.new_channel.send.await_count
 
-        second = await ingest_auction_announcements(source, parser, session, notifier=router)
-        assert second.notified == 0  # nothing changed -> nothing queued -> nothing sent
+        # Re-running ingest against the same unchanged fixtures queues
+        # nothing new (delivery_key dedupe), and re-running delivery sends
+        # nothing further for rows already marked "delivered".
+        second = await ingest_auction_announcements(source, parser, session)
+        assert second.notifications_queued == 0
+        second_report = await deliver_pending_notifications(session, router)
+        assert second_report.attempted == 0
+        assert second_report.delivered == 0
         assert router.new_channel.send.await_count == call_count_after_first  # unchanged
 
 

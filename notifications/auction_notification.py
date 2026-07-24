@@ -266,10 +266,29 @@ _KIND_TO_CHANNEL_ATTR = {
 }
 
 
+@dataclass(frozen=True)
+class DeliveryOutcome:
+    """Result of attempting to send to exactly one destination (channel kind)."""
+
+    kind: str
+    success: bool
+    error: str | None = None
+
+
 class AuctionNotificationRouter:
     """Maps ``channels_for_new_case``/``channels_for_status_event``'s decisions to
     actual configured Discord channels and sends. See those functions'
     module-level docstring for the routing rules themselves.
+
+    Every send is per-destination: ``send_new_case``/``send_status_event``
+    each target exactly one channel kind and never raise -- a failure on
+    one destination (bad channel ID, rate limit, network blip, ...) is
+    caught and returned as a failed ``DeliveryOutcome``, so it can never
+    prevent an attempt at any other destination for the same case/event.
+    ``publish_new_case``/``publish_status_event`` are the convenience
+    wrappers that compute which kinds apply and attempt all of them,
+    aggregating every outcome (including failures) rather than
+    short-circuiting on the first one.
     """
 
     def __init__(
@@ -291,23 +310,37 @@ class AuctionNotificationRouter:
         self.high_score_threshold = high_score_threshold
         self.upcoming_within_days = upcoming_within_days
 
+    async def send_new_case(
+        self, kind: str, case: AuctionCase, market_unit_price_twd: int, score: AuctionScore
+    ) -> DeliveryOutcome:
+        """Send a "new case" notification to exactly the ``kind`` destination. Never raises."""
+        channel = getattr(self, _KIND_TO_CHANNEL_ATTR[kind])
+        try:
+            await self._send_new(channel, case, market_unit_price_twd, score)
+            return DeliveryOutcome(kind=kind, success=True)
+        except Exception as exc:  # noqa: BLE001 -- one destination's failure must never affect any other
+            return DeliveryOutcome(kind=kind, success=False, error=str(exc))
+
+    async def send_status_event(self, kind: str, case: AuctionCase, event: AuctionStatusHistory) -> DeliveryOutcome:
+        """Send a status-update notification to exactly the ``kind`` destination. Never raises."""
+        channel = getattr(self, _KIND_TO_CHANNEL_ATTR[kind])
+        try:
+            await self._send_status(channel, case, event)
+            return DeliveryOutcome(kind=kind, success=True)
+        except Exception as exc:  # noqa: BLE001 -- one destination's failure must never affect any other
+            return DeliveryOutcome(kind=kind, success=False, error=str(exc))
+
     async def publish_new_case(
         self, case: AuctionCase, market_unit_price_twd: int, score: AuctionScore
-    ) -> list[str]:
+    ) -> list[DeliveryOutcome]:
         kinds = channels_for_new_case(
             case, score, high_score_threshold=self.high_score_threshold, upcoming_within_days=self.upcoming_within_days
         )
-        for kind in kinds:
-            channel = getattr(self, _KIND_TO_CHANNEL_ATTR[kind])
-            await self._send_new(channel, case, market_unit_price_twd, score)
-        return kinds
+        return [await self.send_new_case(kind, case, market_unit_price_twd, score) for kind in kinds]
 
-    async def publish_status_event(self, case: AuctionCase, event: AuctionStatusHistory) -> list[str]:
+    async def publish_status_event(self, case: AuctionCase, event: AuctionStatusHistory) -> list[DeliveryOutcome]:
         kinds = channels_for_status_event(case, event, upcoming_within_days=self.upcoming_within_days)
-        for kind in kinds:
-            channel = getattr(self, _KIND_TO_CHANNEL_ATTR[kind])
-            await self._send_status(channel, case, event)
-        return kinds
+        return [await self.send_status_event(kind, case, event) for kind in kinds]
 
     @staticmethod
     async def _send_new(

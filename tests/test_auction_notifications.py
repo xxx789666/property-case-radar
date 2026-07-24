@@ -7,6 +7,7 @@ from database.models.auction import AuctionCase, AuctionRound, AuctionStatus
 from notifications import auction_notification as an
 from notifications.auction_notification import (
     AuctionNotificationRouter,
+    DeliveryOutcome,
     build_case_detail_text,
     build_new_case_notification,
     build_status_update_notification,
@@ -184,7 +185,9 @@ class TestAuctionNotificationRouter:
             suspended_channel=AsyncMock(),
             high_score_threshold=80,
         )
-        kinds = await router.publish_new_case(sample_case, 358_000, score)
+        outcomes = await router.publish_new_case(sample_case, 358_000, score)
+        assert all(o.success for o in outcomes)
+        kinds = {o.kind for o in outcomes}
         assert "new" in kinds
         assert "round" in kinds  # round_number == 2
         router.new_channel.send.assert_awaited_once()
@@ -206,6 +209,47 @@ class TestAuctionNotificationRouter:
         assert kinds == []
         router.new_channel.send.assert_not_called()
 
+    async def test_one_destination_failing_does_not_block_the_others(self, sample_case: AuctionCase) -> None:
+        from unittest.mock import AsyncMock
+
+        score = score_auction_case(sample_case, 358_000)
+        new_channel = AsyncMock()
+        new_channel.send = AsyncMock(side_effect=RuntimeError("channel unavailable"))
+        round_channel = AsyncMock()
+        router = AuctionNotificationRouter(
+            new_channel=new_channel,
+            upcoming_channel=AsyncMock(),
+            round_channel=round_channel,
+            high_score_channel=AsyncMock(),
+            suspended_channel=AsyncMock(),
+            high_score_threshold=80,
+        )
+        # sample_case is round 2 -> routes to both "new" (fails) and
+        # "round" (should still succeed despite "new" failing first).
+        outcomes = await router.publish_new_case(sample_case, 358_000, score)
+        by_kind = {o.kind: o for o in outcomes}
+        assert by_kind["new"].success is False
+        assert "channel unavailable" in by_kind["new"].error
+        assert by_kind["round"].success is True
+        assert by_kind["round"].error is None
+        round_channel.send.assert_awaited_once()
+
+    async def test_send_new_case_and_send_status_event_never_raise(self, sample_case: AuctionCase) -> None:
+        from unittest.mock import AsyncMock
+
+        score = score_auction_case(sample_case, 358_000)
+        broken_channel = AsyncMock()
+        broken_channel.send = AsyncMock(side_effect=RuntimeError("boom"))
+        router = AuctionNotificationRouter(
+            new_channel=broken_channel,
+            upcoming_channel=AsyncMock(),
+            round_channel=AsyncMock(),
+            high_score_channel=AsyncMock(),
+            suspended_channel=AsyncMock(),
+        )
+        outcome = await router.send_new_case("new", sample_case, 358_000, score)
+        assert outcome == DeliveryOutcome(kind="new", success=False, error="boom")
+
     async def test_publish_status_event_suspended_routes_only_to_suspended_channel(self, sample_case: AuctionCase) -> None:
         from unittest.mock import AsyncMock
 
@@ -217,8 +261,9 @@ class TestAuctionNotificationRouter:
             high_score_channel=AsyncMock(),
             suspended_channel=AsyncMock(),
         )
-        kinds = await router.publish_status_event(sample_case, event)
-        assert kinds == ["suspended_withdrawn"]
+        outcomes = await router.publish_status_event(sample_case, event)
+        assert [o.kind for o in outcomes] == ["suspended_withdrawn"]
+        assert outcomes[0].success
         router.suspended_channel.send.assert_awaited_once()
         router.new_channel.send.assert_not_called()
 
@@ -249,8 +294,9 @@ class TestAuctionNotificationRouter:
             high_score_channel=AsyncMock(),
             suspended_channel=AsyncMock(),
         )
-        kinds = await router.publish_status_event(sample_case, event)
-        assert kinds == ["round"]
+        outcomes = await router.publish_status_event(sample_case, event)
+        assert [o.kind for o in outcomes] == ["round"]
+        assert outcomes[0].success
         router.round_channel.send.assert_awaited_once()
 
     async def test_publish_status_event_failed_at_round_1_has_no_channel(self) -> None:

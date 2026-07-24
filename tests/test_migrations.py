@@ -1,7 +1,7 @@
 """Migration determinism/fidelity checks against real SQLite databases.
 
-``database/migrations/versions/0001_sale_core.py`` and
-``0002_auction_core.py`` are hand-written ``op.create_table``/
+``database/migrations/versions/0001_sale_core.py``, ``0002_auction_core.py``,
+and ``0003_notification_outbox.py`` are hand-written ``op.create_table``/
 ``op.add_column`` DDL -- they do NOT call
 ``database.models.Base.metadata.create_all()`` (a live-metadata-derived
 migration would silently change historical behavior if a model gains or
@@ -9,9 +9,13 @@ loses a column later). These tests run the actual Alembic CLI
 (``python -m alembic upgrade/downgrade``) against disposable SQLite
 files to verify: 0001 alone produces exactly the sale/shared tables (no
 auction_* tables yet), 0002 adds exactly the auction tables plus
-``notification_logs.auction_case_id``, a downgrade removes exactly what
-its own revision added, a full downgrade-then-upgrade round trip is
-stable, and the resulting schema is column-for-column identical to what
+``notification_logs.auction_case_id`` (still on the old
+single-``sent_at`` shape), 0003 replaces ``notification_logs`` with the
+durable outbox shape (``delivery_key``/``status``/``attempt_count``/
+``last_error``/``created_at``/``delivered_at``, no more bare
+``sent_at``), a downgrade removes/restores exactly what its own revision
+added/replaced, a full downgrade-then-upgrade round trip is stable, and
+the resulting schema is column-for-column identical to what
 ``database.models``' live SQLAlchemy models would produce (the fidelity
 check that keeps the frozen DDL from drifting out of sync with the ORM
 it's meant to describe). PostgreSQL-specific behavior (e.g. native
@@ -50,6 +54,9 @@ _EXPECTED_AUCTION_TABLES = {
     "auction_status_history",
     "auction_subscriptions",
 }
+
+_OUTBOX_ONLY_COLUMNS = {"status_history_id", "delivery_key", "status", "attempt_count", "last_error"}
+_PRE_OUTBOX_ONLY_COLUMNS = {"sent_at"}
 
 
 def _sqlite_url(path: Path) -> str:
@@ -109,6 +116,7 @@ def test_alembic_history_resolves_without_a_database() -> None:
     assert result.returncode == 0, result.stderr
     assert "0001" in result.stdout
     assert "0002" in result.stdout
+    assert "0003" in result.stdout
 
 
 def test_upgrade_0001_creates_only_sale_and_shared_tables(tmp_path) -> None:
@@ -137,6 +145,41 @@ def test_upgrade_head_adds_auction_tables_on_top_of_0001(tmp_path) -> None:
     finally:
         engine.dispose()
     assert {"property_id", "auction_case_id"} <= columns
+    # head includes 0003: the outbox shape must be present, and the old
+    # single-sent_at shape must be gone.
+    assert _OUTBOX_ONLY_COLUMNS <= columns
+    assert not (_PRE_OUTBOX_ONLY_COLUMNS & columns)
+
+
+def test_upgrade_0002_stops_at_the_pre_outbox_notification_logs_shape(tmp_path) -> None:
+    url = _sqlite_url(tmp_path / "only_0002.db")
+    result = _run_alembic("upgrade", "0002", database_url=url)
+    assert result.returncode == 0, result.stderr
+    assert _table_names(url) == _EXPECTED_SALE_TABLES | _EXPECTED_AUCTION_TABLES
+
+    engine = create_engine(url)
+    try:
+        columns = {c["name"] for c in inspect(engine).get_columns("notification_logs")}
+    finally:
+        engine.dispose()
+    assert _PRE_OUTBOX_ONLY_COLUMNS <= columns
+    assert not (_OUTBOX_ONLY_COLUMNS & columns)
+
+
+def test_downgrade_0003_to_0002_restores_the_pre_outbox_notification_logs_shape(tmp_path) -> None:
+    url = _sqlite_url(tmp_path / "downgrade_0003.db")
+    assert _run_alembic("upgrade", "head", database_url=url).returncode == 0
+    result = _run_alembic("downgrade", "0002", database_url=url)
+    assert result.returncode == 0, result.stderr
+    assert _table_names(url) == _EXPECTED_SALE_TABLES | _EXPECTED_AUCTION_TABLES
+
+    engine = create_engine(url)
+    try:
+        columns = {c["name"] for c in inspect(engine).get_columns("notification_logs")}
+    finally:
+        engine.dispose()
+    assert _PRE_OUTBOX_ONLY_COLUMNS <= columns
+    assert not (_OUTBOX_ONLY_COLUMNS & columns)
 
 
 def test_downgrade_to_0001_removes_only_auction_tables(tmp_path) -> None:
