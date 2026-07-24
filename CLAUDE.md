@@ -4,7 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-This repository currently contains **no source code** — only planning documents. There is no build, lint, or test tooling to run yet. When implementation begins, this file should be updated with real commands (how to run the API/bot/scheduler, run migrations, run a single test, etc.).
+This repository now contains the sale-core v1 implementation. Use these commands:
+
+- Install: `pip install -e .[dev]`
+- Test all: `pytest`
+- Test one file: `pytest tests/test_scoring.py`
+- API: `uvicorn apps.api.main:app --reload`
+- Scheduler: `python -m apps.scheduler.main`
+- Migrations: `alembic upgrade head`
+- Discord bot: `python -m apps.discord_bot.main` (requires a local `DISCORD_TOKEN`)
 
 Files present:
 

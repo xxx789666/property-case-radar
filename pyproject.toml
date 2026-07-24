@@ -1,24 +1,34 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "property-case-radar"
+name = "taiwan-real-estate-radar"
 version = "0.1.0"
-description = "Taiwan Real Estate Case Radar (Discord bot: sale + auction pipelines)"
+description = "Taiwan real-estate sale listing radar v1"
 requires-python = ">=3.11"
+dependencies = [
+  "alembic>=1.13,<2",
+  "apscheduler>=3.10,<4",
+  "discord.py>=2.4,<3",
+  "fastapi>=0.115,<1",
+  "httpx>=0.27,<1",
+  "pydantic-settings>=2.5,<3",
+  "psycopg[binary]>=3.2,<4",
+  "sqlalchemy>=2.0,<3",
+  "uvicorn[standard]>=0.30,<1",
+]
 
-# NOTE: This file is intentionally minimal. It exists so the auction
-# vertical (src/property_case_radar/auction) can be imported and tested
-# standalone. If the sale-pipeline scaffold (task A) introduces its own
-# pyproject.toml, merge the two rather than picking one — both verticals
-# live under the same src/property_case_radar package root by design
-# (see CLAUDE.md "Keep sale-pipeline and auction-pipeline code physically
-# separate ... under src/property_case_radar").
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.24,<1",
+]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+include = ["apps*", "crawlers*", "database*", "notifications*", "scoring*"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
 testpaths = ["tests"]
+addopts = "-q"
+asyncio_mode = "auto"
