@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "property-case-radar"
+version = "0.1.0"
+description = "Taiwan Real Estate Case Radar (Discord bot: sale + auction pipelines)"
+requires-python = ">=3.11"
+
+# NOTE: This file is intentionally minimal. It exists so the auction
+# vertical (src/property_case_radar/auction) can be imported and tested
+# standalone. If the sale-pipeline scaffold (task A) introduces its own
+# pyproject.toml, merge the two rather than picking one — both verticals
+# live under the same src/property_case_radar package root by design
+# (see CLAUDE.md "Keep sale-pipeline and auction-pipeline code physically
+# separate ... under src/property_case_radar").
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

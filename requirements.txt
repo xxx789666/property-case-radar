@@ -1,0 +1,15 @@
+# Dependencies actually required to import/run/test the auction vertical
+# (src/property_case_radar/auction) as it exists today.
+beautifulsoup4>=4.12
+pytest>=8.0
+
+# Deps referenced by the project spec (taiwan_real_estate_radar.md, section
+# 十三) that this vertical does NOT yet import or require, because this
+# round intentionally ships fixture-backed / mock-backed code (no live
+# crawling, no live Discord connection). Add these when real integration
+# lands:
+#   discord.py     - real Discord gateway/slash-command adapter
+#   httpx           - live HTTP fetching for the court announcement crawler
+#   playwright       - for JS-rendered court announcement pages, if needed
+#   fastapi, apscheduler, psycopg[binary] / SQLAlchemy - shared API/DB layer
+#   (owned jointly with the sale pipeline; see docs/auction_pipeline.md)
