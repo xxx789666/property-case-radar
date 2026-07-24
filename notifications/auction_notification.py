@@ -120,6 +120,13 @@ def build_case_detail_text(
     ``audience`` fails safe -- callers that know they're in the private
     search channel (per discord 伺服器.txt) must opt in with
     ``audience="private"`` to see unmasked names.
+
+    ``case.occupancy_note`` is free text entered by whoever recorded the
+    case (a crawler operator, an admin) and may itself name a natural
+    person (e.g. "占用人王小明拒絕遷讓" / "occupant John Smith refuses to
+    vacate") -- exactly like ``AuctionStatusHistory.note`` there is no
+    reliable way to auto-redact arbitrary free text, so it is simply
+    omitted on a public audience rather than shown as-is.
     """
     base = build_new_case_notification(case, market_unit_price_twd, score, audience=audience)
     debtor_display, owner_display = display_debtor_owner(case.debtor, case.owner, audience=audience)
@@ -127,8 +134,9 @@ def build_case_detail_text(
         "",
         f"債務人：{debtor_display or '未提供'}",
         f"所有權人：{owner_display or '未提供'}",
-        f"占用情況：{case.occupancy_note or '未知'}",
     ]
+    if audience == "private":
+        extra.append(f"占用情況：{case.occupancy_note or '未知'}")
     return AuctionNotification(text=base.text + "\n" + "\n".join(extra), audience=audience)
 
 

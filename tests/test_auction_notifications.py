@@ -66,6 +66,26 @@ def test_build_case_detail_text_masks_by_audience(sample_case: AuctionCase) -> N
     assert "債務人：王小明" in private.text
 
 
+def test_build_case_detail_text_occupancy_note_hidden_for_public_chinese_name(sample_case: AuctionCase) -> None:
+    sample_case.occupancy_note = "占用人王小明拒絕遷讓"
+    score = score_auction_case(sample_case, 358_000)
+    public = build_case_detail_text(sample_case, 358_000, score, audience="public")
+    private = build_case_detail_text(sample_case, 358_000, score, audience="private")
+    assert "王小明" not in public.text
+    assert "占用情況" not in public.text
+    assert "占用情況：占用人王小明拒絕遷讓" in private.text
+
+
+def test_build_case_detail_text_occupancy_note_hidden_for_public_english_name(sample_case: AuctionCase) -> None:
+    sample_case.occupancy_note = "Occupant John Smith refuses to vacate"
+    score = score_auction_case(sample_case, 358_000)
+    public = build_case_detail_text(sample_case, 358_000, score, audience="public")
+    private = build_case_detail_text(sample_case, 358_000, score, audience="private")
+    assert "John Smith" not in public.text
+    assert "占用情況" not in public.text
+    assert "John Smith" in private.text
+
+
 def test_build_case_detail_text_default_audience_is_public() -> None:
     from database.models.auction import CaseType, OccupancyStatus, OwnershipType
 

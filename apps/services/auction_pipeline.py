@@ -23,6 +23,7 @@ model, and monetary fields to whole TWD (``*_twd``) to match
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
@@ -45,7 +46,10 @@ from database.models.auction import (
 )
 from database.models.common import MarketPrice
 from database.repositories.auction import AuctionRepository
+from notifications.auction_notification import AuctionNotificationRouter
 from scoring.auction_score import AuctionScore, risk_score_0_100, score_auction_case
+
+logger = logging.getLogger(__name__)
 
 # --- status transition table ------------------------------------------
 #
@@ -132,7 +136,7 @@ def apply_status_transition(
     ``next_round``: required when transitioning FAILED -> ANNOUNCED, i.e.
     "流標 -> 轉下一拍". The prior round is marked FAILED (if not already)
     and the new round is appended. ``next_round.round_number`` must be
-    strictly greater than the round it replaces.
+    exactly one more than the round it replaces -- no gaps or skips.
 
     ``winning_price_twd``: REQUIRED (and must be positive -- enforced by
     ``AuctionRound``'s own validator) when transitioning to AWARDED
@@ -167,10 +171,10 @@ def apply_status_transition(
     if is_round_advance:
         if next_round is None:
             raise ValueError("next_round is required when advancing from a failed round to the next round")
-        if case.current_round is not None and next_round.round_number <= case.current_round.round_number:
+        if case.current_round is not None and next_round.round_number != case.current_round.round_number + 1:
             raise ValueError(
-                f"next_round.round_number ({next_round.round_number}) must be greater than "
-                f"the current round_number ({case.current_round.round_number})"
+                f"next_round.round_number ({next_round.round_number}) must be exactly "
+                f"{case.current_round.round_number + 1} (the next round); no gaps or skips are allowed"
             )
         if case.current_round is not None and case.current_round.result == RoundResult.PENDING:
             case.current_round.result = RoundResult.FAILED
@@ -306,7 +310,40 @@ _KIND_TO_STATUS: dict[AnnouncementKind, AuctionStatus] = {
     AnnouncementKind.CORRECTION: AuctionStatus.CORRECTED,
     AnnouncementKind.PRICE_CHANGE: AuctionStatus.PRICE_CHANGED,
     AnnouncementKind.DATE_CHANGE: AuctionStatus.DATE_CHANGED,
+    AnnouncementKind.FAILED: AuctionStatus.FAILED,
+    AnnouncementKind.SUSPENDED: AuctionStatus.SUSPENDED,
+    AnnouncementKind.WITHDRAWN: AuctionStatus.WITHDRAWN,
+    AnnouncementKind.AWARDED: AuctionStatus.AWARDED,
 }
+
+# Which RoundResult a case's current round must carry when it is
+# *discovered* (no prior `existing` row) already sitting in one of these
+# terminal/failed statuses -- e.g. a crawler backlog re-sync whose first
+# successful fetch for a case happens to be its 流標/停拍/撤回/拍定
+# notice. Mirrors the round-result bookkeeping apply_status_transition
+# does for a case we already had a row for.
+_STATUS_TO_ROUND_RESULT: dict[AuctionStatus, RoundResult] = {
+    AuctionStatus.FAILED: RoundResult.FAILED,
+    AuctionStatus.SUSPENDED: RoundResult.SUSPENDED,
+    AuctionStatus.WITHDRAWN: RoundResult.WITHDRAWN,
+    AuctionStatus.AWARDED: RoundResult.AWARDED,
+}
+
+
+def _apply_initial_round_result(case: AuctionCase, status: AuctionStatus, winning_price_twd: int | None) -> None:
+    """Set the current round's result to match a newly-discovered case's initial status.
+
+    Only fires for FAILED/SUSPENDED/WITHDRAWN/AWARDED; ANNOUNCED/CORRECTED/
+    PRICE_CHANGED/DATE_CHANGED leave the round PENDING, as normal.
+    """
+    result = _STATUS_TO_ROUND_RESULT.get(status)
+    if result is None or case.current_round is None:
+        return
+    if status == AuctionStatus.AWARDED:
+        if winning_price_twd is None:
+            raise ValueError("a case discovered already AWARDED requires a positive winning_price_twd")
+        case.current_round.winning_price_twd = winning_price_twd  # validated positive by AuctionRound
+    case.current_round.result = result
 
 
 @dataclass(frozen=True)
@@ -384,19 +421,21 @@ def ingest_auction_announcement(
             )
         # A case can be "discovered" via any announcement kind (e.g. the
         # crawler's first successful fetch for this case happens to be a
-        # correction page) -- there is no real "from" status in that cold
-        # start, so this is recorded as a single from_status=None event
-        # rather than a synthetic ANNOUNCED-then-immediately-transition
-        # pair that would misrepresent the history.
+        # correction, failure, or award notice) -- there is no real "from"
+        # status in that cold start, so this is recorded as a single
+        # from_status=None event rather than a synthetic
+        # ANNOUNCED-then-immediately-transition pair that would
+        # misrepresent the history.
         initial_status = _KIND_TO_STATUS[parsed.kind]
         case.status = initial_status
+        _apply_initial_round_result(case, initial_status, parsed.winning_price_twd)
         case.status_history.append(
             AuctionStatusHistory(
                 to_status=initial_status,
                 changed_at=event_at,
                 from_status=None,
                 round_number=case.round_number,
-                note="首次發現公告",
+                note=parsed.note or "首次發現公告",
             )
         )
         for doc in extract_documents(parsed, fetched_at=fetched_at):
@@ -409,13 +448,14 @@ def ingest_auction_announcement(
                     content_hash=doc.content_hash,
                 )
             )
+        _assert_invariants(case)
         repository.add(case)
         return IngestOutcome(case=case, created=True, status_changed=False, skipped_unchanged=False)
 
     status_changed = False
     if parsed.kind == AnnouncementKind.CORRECTION:
         _apply_descriptive_fields(existing, parsed)
-        apply_status_transition(existing, AuctionStatus.CORRECTED, changed_at=event_at, note="更正公告")
+        apply_status_transition(existing, AuctionStatus.CORRECTED, changed_at=event_at, note=parsed.note or "更正公告")
         status_changed = True
     elif parsed.kind == AnnouncementKind.PRICE_CHANGE:
         apply_status_transition(
@@ -431,6 +471,48 @@ def ingest_auction_announcement(
             existing, AuctionStatus.DATE_CHANGED, changed_at=event_at, new_auction_date=parsed.auction_date
         )
         status_changed = True
+    elif parsed.kind == AnnouncementKind.SUSPENDED:
+        apply_status_transition(existing, AuctionStatus.SUSPENDED, changed_at=event_at, note=parsed.note)
+        status_changed = True
+    elif parsed.kind == AnnouncementKind.WITHDRAWN:
+        apply_status_transition(existing, AuctionStatus.WITHDRAWN, changed_at=event_at, note=parsed.note)
+        status_changed = True
+    elif parsed.kind == AnnouncementKind.AWARDED:
+        apply_status_transition(
+            existing,
+            AuctionStatus.AWARDED,
+            changed_at=event_at,
+            winning_price_twd=parsed.winning_price_twd,
+            note=parsed.note,
+        )
+        status_changed = True
+    elif parsed.kind == AnnouncementKind.FAILED:
+        apply_status_transition(existing, AuctionStatus.FAILED, changed_at=event_at, note=parsed.note)
+        status_changed = True
+        # A 流標 announcement sometimes simultaneously announces the next
+        # round ("第一拍流標，訂於...進行第二拍拍賣，底價..."). Only treat
+        # it as a round advance when the round data is unambiguous and
+        # strictly the next round -- apply_status_transition itself
+        # enforces the same "exactly current+1" rule, but checking it here
+        # too lets a genuinely-just-流標 announcement (no next-round data,
+        # or a malformed/gapped round number) stay in FAILED and wait for
+        # a separate follow-up announcement, instead of raising and
+        # aborting the whole batch over one ambiguous page.
+        has_next_round_data = (
+            parsed.round_number is not None
+            and parsed.floor_price_total_twd is not None
+            and parsed.floor_unit_price_twd is not None
+            and parsed.round_number == (existing.round_number or 0) + 1
+        )
+        if has_next_round_data:
+            next_round = AuctionRound(
+                round_number=parsed.round_number,
+                floor_price_total_twd=parsed.floor_price_total_twd,
+                floor_unit_price_twd=parsed.floor_unit_price_twd,
+                auction_date=parsed.auction_date,
+                deposit_twd=parsed.deposit_twd,
+            )
+            apply_status_transition(existing, AuctionStatus.ANNOUNCED, changed_at=event_at, next_round=next_round)
     elif parsed.kind == AnnouncementKind.NEW and _as_aware_utc(event_at) >= _as_aware_utc(existing.updated_at):
         # Re-published NEW-kind page for an already-known case (e.g. the
         # court re-issued the same announcement) -- refresh descriptive
@@ -462,13 +544,21 @@ def ingest_auction_announcement(
     return IngestOutcome(case=existing, created=False, status_changed=status_changed, skipped_unchanged=False)
 
 
-def rescore_case(case: AuctionCase, session: Session, *, liquidity_index: float = 0.5) -> AuctionScore | None:
+@dataclass(frozen=True)
+class RescoreResult:
+    market_unit_price_twd: int
+    score: AuctionScore
+
+
+def rescore_case(case: AuctionCase, session: Session, *, liquidity_index: float = 0.5) -> RescoreResult | None:
     """Look up the shared ``market_prices`` row for ``case`` and cache a fresh score.
 
     Returns ``None`` (leaving cached scores untouched) if there's no
     round yet or no matching regional market price -- mirrors
     ``apps.services.sale_pipeline.ingest_sale_listings``'s "only score
-    when we have something to compare against" behavior.
+    when we have something to compare against" behavior. The returned
+    ``market_unit_price_twd`` is reused by the notification step below so
+    a "new case" notification never needs a second market-price query.
     """
     if case.current_round is None:
         return None
@@ -486,7 +576,7 @@ def rescore_case(case: AuctionCase, session: Session, *, liquidity_index: float 
     case.surface_discount_rate = score.surface_discount_rate
     case.risk_score = Decimal(risk_score_0_100(case))
     case.investment_score = Decimal(score.total)
-    return score
+    return RescoreResult(market_unit_price_twd=market.average_unit_price_twd, score=score)
 
 
 @dataclass(frozen=True)
@@ -495,6 +585,8 @@ class IngestResult:
     created: int = 0
     status_changed: int = 0
     skipped_unchanged: int = 0
+    notified: int = 0
+    notify_failures: int = 0
 
 
 async def ingest_auction_announcements(
@@ -503,7 +595,27 @@ async def ingest_auction_announcements(
     session: Session,
     *,
     liquidity_index: float = 0.5,
+    notifier: AuctionNotificationRouter | None = None,
 ) -> IngestResult:
+    """Fetch, parse, and persist a batch of announcements, then (if ``notifier``
+    is given) push Discord notifications for whatever actually changed.
+
+    Notification delivery is strictly a post-commit side effect:
+    ``session.commit()`` happens before a single ``notifier`` call is
+    made, so a Discord/network failure can never roll back state that's
+    already durably persisted. Each notification attempt is wrapped
+    individually -- one failure is logged and counted in
+    ``IngestResult.notify_failures`` without aborting the rest of the
+    batch or raising out of this function (a scheduler job crashing on a
+    Discord hiccup would otherwise silently stop the whole crawl cycle).
+
+    Only outcomes that represent a *persisted, real* change (a newly
+    created case, or an actual status transition) are queued for
+    notification -- never a skipped-unchanged re-fetch or a same-status
+    no-op refresh -- so re-running this against an already-ingested batch
+    (e.g. the next scheduler tick re-fetching pages that haven't changed)
+    can never re-send the same notification twice.
+    """
     repository = AuctionRepository(session)
     raw_announcements = await source.fetch()
     parsed_batch = [(raw, parser.parse(raw.raw_html, source_url=raw.source_url)) for raw in raw_announcements]
@@ -513,18 +625,60 @@ async def ingest_auction_announcements(
     # source listing has no guaranteed order (e.g. a backlog re-sync could
     # return newest-first).
     parsed_batch.sort(key=lambda pair: _event_timestamp(pair[1], pair[0].fetched_at))
+
     created = 0
     status_changed = 0
     skipped = 0
+    # (case, status_event_or_None, rescore_result_or_None) -- event is
+    # None for a brand-new case (publish_new_case), set for a status
+    # transition on an existing case (publish_status_event).
+    to_notify: list[tuple[AuctionCase, AuctionStatusHistory | None, RescoreResult | None]] = []
+
     for raw, parsed in parsed_batch:
         outcome = ingest_auction_announcement(parsed, repository, fetched_at=raw.fetched_at)
         if outcome.skipped_unchanged:
             skipped += 1
             continue
-        rescore_case(outcome.case, session, liquidity_index=liquidity_index)
+        rescore = rescore_case(outcome.case, session, liquidity_index=liquidity_index)
         created += int(outcome.created)
         status_changed += int(outcome.status_changed)
+        if outcome.created:
+            to_notify.append((outcome.case, None, rescore))
+        elif outcome.status_changed:
+            to_notify.append((outcome.case, outcome.case.status_history[-1], rescore))
+
     session.commit()
+
+    notified = 0
+    notify_failures = 0
+    if notifier is not None:
+        for case, event, rescore in to_notify:
+            try:
+                if event is None:
+                    if rescore is None:
+                        logger.info(
+                            "skipping new-case notification for %s %s: no regional market price available",
+                            case.court_name,
+                            case.case_number,
+                        )
+                        continue
+                    await notifier.publish_new_case(case, rescore.market_unit_price_twd, rescore.score)
+                else:
+                    await notifier.publish_status_event(case, event)
+                notified += 1
+            except Exception:  # noqa: BLE001 -- deliberately broad: any channel/network failure must not crash the crawl job
+                notify_failures += 1
+                logger.exception(
+                    "failed to publish auction notification for %s %s (state already committed; not retried this run)",
+                    case.court_name,
+                    case.case_number,
+                )
+
     return IngestResult(
-        processed=len(raw_announcements), created=created, status_changed=status_changed, skipped_unchanged=skipped
+        processed=len(raw_announcements),
+        created=created,
+        status_changed=status_changed,
+        skipped_unchanged=skipped,
+        notified=notified,
+        notify_failures=notify_failures,
     )

@@ -9,7 +9,7 @@ from crawlers.auction.parser import CourtAnnouncementParser
 async def test_fetch_returns_all_fixture_files() -> None:
     source = FixtureAuctionAnnouncementSource("crawlers/auction/fixtures")
     announcements = await source.fetch()
-    assert len(announcements) == 4
+    assert len(announcements) == 9
     assert all(a.raw_html.strip() for a in announcements)
     assert all(a.source_url.startswith("file://") for a in announcements)
 
@@ -22,13 +22,21 @@ async def test_fetch_has_no_network_dependency() -> None:
     assert not hasattr(module, "requests")
 
 
+_KNOWN_FIXTURE_CASE_NUMBERS = {
+    "115年度司執字第12345號",
+    "115年度司執字第67890號",
+    "115年度司執字第55555號",
+    "115年度司執字第44444號",
+}
+
+
 @pytest.mark.asyncio
 async def test_fixture_announcements_are_parseable() -> None:
     source = FixtureAuctionAnnouncementSource("crawlers/auction/fixtures")
     parser = CourtAnnouncementParser()
     for announcement in await source.fetch():
         parsed = parser.parse(announcement.raw_html, source_url=announcement.source_url)
-        assert parsed.case_number == "115年度司執字第12345號"
+        assert parsed.case_number in _KNOWN_FIXTURE_CASE_NUMBERS
 
 
 def test_compliance_policy_refuses_bypass() -> None:

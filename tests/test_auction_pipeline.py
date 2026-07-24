@@ -162,8 +162,16 @@ def test_failed_then_round_advance_requires_next_round(sample_case: AuctionCase)
 def test_next_round_number_must_advance(sample_case: AuctionCase) -> None:
     apply_status_transition(sample_case, AuctionStatus.FAILED, changed_at=utc(2026, 8, 1))
     same_round = AuctionRound(round_number=2, floor_price_total_twd=1, floor_unit_price_twd=1)
-    with pytest.raises(ValueError, match="must be greater than"):
+    with pytest.raises(ValueError, match="must be exactly"):
         apply_status_transition(sample_case, AuctionStatus.ANNOUNCED, changed_at=utc(2026, 8, 2), next_round=same_round)
+
+
+def test_next_round_number_rejects_a_gap(sample_case: AuctionCase) -> None:
+    # sample_case is at round 2; round 4 skips round 3 entirely.
+    apply_status_transition(sample_case, AuctionStatus.FAILED, changed_at=utc(2026, 8, 1))
+    gapped_round = AuctionRound(round_number=4, floor_price_total_twd=1, floor_unit_price_twd=1)
+    with pytest.raises(ValueError, match="must be exactly 3"):
+        apply_status_transition(sample_case, AuctionStatus.ANNOUNCED, changed_at=utc(2026, 8, 2), next_round=gapped_round)
 
 
 def test_next_round_rejected_outside_round_advance(sample_case: AuctionCase) -> None:
@@ -253,8 +261,12 @@ async def test_ingest_creates_case_with_full_chronological_history(session_facto
         parser = CourtAnnouncementParser()
 
         result = await ingest_auction_announcements(source, parser, session)
-        assert result.processed == 4
-        assert result.created == 1
+        # 9 fixtures now cover 4 distinct cases (see
+        # test_auction_pipeline_end_to_end.py for the FAILED/SUSPENDED/
+        # WITHDRAWN/AWARDED-specific cases); this test only cares about
+        # the original 桃園 case's chronological history.
+        assert result.processed == 9
+        assert result.created == 4
         assert result.skipped_unchanged == 0
 
         case = AuctionRepository(session).get_by_case_number("桃園地方法院", "115年度司執字第12345號")
@@ -285,10 +297,10 @@ async def test_ingest_twice_is_idempotent(session_factory) -> None:
         parser = CourtAnnouncementParser()
         first = await ingest_auction_announcements(source, parser, session)
         second = await ingest_auction_announcements(source, parser, session)
-        assert first.created == 1
+        assert first.created == 4
         assert second.created == 0
         assert second.status_changed == 0
-        assert second.skipped_unchanged == 4
+        assert second.skipped_unchanged == 9
 
 
 @pytest.mark.asyncio

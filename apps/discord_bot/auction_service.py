@@ -166,7 +166,16 @@ class AuctionCommandService:
                 f"⚠️ 風險評估：{case.case_number}",
                 "",
                 f"點交狀態：{case.occupancy_status.value}（{delivery_score(case)}／20 分）",
-                f"占用情況：{case.occupancy_note or '未知'}",
+            ]
+            # case.occupancy_note is free text and may itself name a
+            # natural person (e.g. "占用人王小明拒絕遷讓") -- same
+            # treatment as AuctionStatusHistory.note and
+            # build_case_detail_text: no reliable auto-redaction for
+            # arbitrary free text, so it's omitted for public audiences
+            # rather than shown as-is.
+            if audience == "private":
+                lines.append(f"占用情況：{case.occupancy_note or '未知'}")
+            lines += [
                 f"產權：{case.ownership_type.value}（{ownership_score(case)}／20 分）",
                 f"是否有增建：{'是' if case.has_unregistered_addition else '否'}",
                 "",

@@ -42,6 +42,10 @@ class AnnouncementKind(str, Enum):
     CORRECTION = "correction"  # 更正公告
     PRICE_CHANGE = "price_change"  # 底價變更
     DATE_CHANGE = "date_change"  # 拍賣日期變更
+    FAILED = "failed"  # 流標 (optionally carries the next round's data too)
+    SUSPENDED = "suspended"  # 停拍
+    WITHDRAWN = "withdrawn"  # 撤回
+    AWARDED = "awarded"  # 拍定／得標 (carries 得標價格)
 
 
 @dataclass
@@ -69,6 +73,13 @@ class ParsedAnnouncement:
     floor_price_total_twd: int | None = None  # 底價
     floor_unit_price_twd: int | None = None  # 底價單價 (元／坪)
     deposit_twd: int | None = None
+    # 得標價格 -- only meaningful (and required by the ingestion pipeline)
+    # when kind == AWARDED.
+    winning_price_twd: int | None = None
+    # Free-text note for FAILED/SUSPENDED/WITHDRAWN/status-change kinds --
+    # see AuctionStatusHistory.note; never rendered to a public audience
+    # (notifications/auction_notification.py).
+    note: str = ""
 
     building_area_ping: float | None = None
     land_area_ping: float | None = None
@@ -165,6 +176,7 @@ class CourtAnnouncementParser:
         deposit_raw = _text_of(pairs, "保證金")
         building_area_raw = _text_of(pairs, "建物坪數")
         land_area_raw = _text_of(pairs, "土地坪數")
+        winning_price_raw = _text_of(pairs, "得標價格")
 
         documents: list[ParsedDocumentLink] = []
         doc_list = article.find("ul", class_="documents")
@@ -196,6 +208,8 @@ class CourtAnnouncementParser:
             floor_price_total_twd=int(floor_price_raw) if floor_price_raw else None,
             floor_unit_price_twd=int(floor_unit_price_raw) if floor_unit_price_raw else None,
             deposit_twd=int(deposit_raw) if deposit_raw else None,
+            winning_price_twd=int(winning_price_raw) if winning_price_raw else None,
+            note=_text_of(pairs, "備註"),
             building_area_ping=float(building_area_raw) if building_area_raw else None,
             land_area_ping=float(land_area_raw) if land_area_raw else None,
             ownership_ratio=_text_of(pairs, "權利範圍"),

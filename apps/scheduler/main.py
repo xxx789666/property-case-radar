@@ -4,16 +4,17 @@ from collections.abc import Callable
 from pathlib import Path
 
 from apscheduler.schedulers.blocking import BlockingScheduler
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from apps.config import get_settings
 from apps.services.auction_pipeline import ingest_auction_announcements
 from apps.services.sale_pipeline import ingest_sale_listings
-from crawlers.auction.court_crawler import FixtureAuctionAnnouncementSource
+from crawlers.auction.court_crawler import AuctionAnnouncementSource, FixtureAuctionAnnouncementSource
 from crawlers.auction.parser import CourtAnnouncementParser
 from crawlers.sale import FixtureSaleCrawler
 from database.models import Base
 from database.session import create_db_engine, create_session_factory
+from notifications.auction_notification import AuctionNotificationRouter
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,33 @@ def build_scheduler(
     return scheduler
 
 
+def make_auction_job(
+    factory: sessionmaker[Session],
+    source: AuctionAnnouncementSource,
+    parser: CourtAnnouncementParser,
+    *,
+    liquidity_index: float = 0.5,
+    notifier: AuctionNotificationRouter | None = None,
+) -> Callable[[], None]:
+    """Build the APScheduler job callable for the auction crawl tick.
+
+    Kept as its own function (rather than inlined in ``main()``) so tests
+    can construct one with a fake/mock ``notifier`` and a SQLite session
+    factory and exercise the real parser -> DB -> router wiring without
+    running APScheduler or a live bot -- see
+    ``tests/test_auction_pipeline_end_to_end.py``.
+    """
+
+    def run_auction_job() -> None:
+        with factory() as session:
+            result = asyncio.run(
+                ingest_auction_announcements(source, parser, session, liquidity_index=liquidity_index, notifier=notifier)
+            )
+            logger.info("auction crawl finished: %s", result)
+
+    return run_auction_job
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = get_settings()
@@ -65,11 +93,17 @@ def main() -> None:
 
     auction_source = FixtureAuctionAnnouncementSource(Path("crawlers/auction/fixtures"))
     auction_parser = CourtAnnouncementParser()
-
-    def run_auction_job() -> None:
-        with factory() as session:
-            result = asyncio.run(ingest_auction_announcements(auction_source, auction_parser, session))
-            logger.info("auction crawl finished: %s", result)
+    # `notifier=None`: this scheduler process has no live Discord
+    # connection of its own this round (see apps/discord_bot/main.py for
+    # the separate bot process, and CLAUDE.md/README for why live Discord
+    # is out of scope here). `ingest_auction_announcements` and
+    # `make_auction_job` fully support a real `AuctionNotificationRouter`
+    # -- wiring one up is just a matter of passing `notifier=` here once
+    # this process (or a future combined scheduler+bot process) has
+    # real channel handles. See
+    # tests/test_auction_pipeline_end_to_end.py for the parser -> DB ->
+    # router path exercised end-to-end with a fake router.
+    run_auction_job = make_auction_job(factory, auction_source, auction_parser, notifier=None)
 
     scheduler = build_scheduler(
         run_sale_job,
