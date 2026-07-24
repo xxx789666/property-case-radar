@@ -20,6 +20,21 @@ class Settings(BaseSettings):
     crawler_min_delay_seconds: float = Field(default=2, ge=0)
     crawler_max_delay_seconds: float = Field(default=5, ge=0)
 
+    # 法拍屋 pipeline -- independent Discord channels/schedule/threshold
+    # per CLAUDE.md ("獨立: ... Discord 指令"), sharing only the bot
+    # process, DB, and notification/subscription plumbing with the sale
+    # settings above.
+    discord_auction_new_channel_id: int = 1530075570140876982
+    discord_auction_upcoming_channel_id: int = 1530075622636781639
+    discord_auction_round_channel_id: int = 1530075673052577922
+    discord_auction_high_score_channel_id: int = 1530075701150089409
+    discord_auction_suspended_channel_id: int = 1530075739750268989
+    discord_auction_search_channel_id: int = 1530076529751756870
+    # spec section 十二: 法拍公告爬蟲每天 2～4 次 -> an interval of 6-12h.
+    auction_crawl_interval_hours: int = Field(default=8, ge=6, le=12)
+    auction_high_score_threshold: int = Field(default=80, ge=0, le=100)
+    auction_upcoming_within_days: int = Field(default=7, ge=1, le=30)
+
     @model_validator(mode="after")
     def validate_delay_range(self) -> "Settings":
         if self.crawler_max_delay_seconds < self.crawler_min_delay_seconds:

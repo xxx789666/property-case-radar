@@ -49,10 +49,20 @@ class MarketPrice(Base, TimestampMixin):
 
 
 class NotificationLog(Base):
+    """Shared notification log for both pipelines.
+
+    Exactly one of ``property_id`` (sale) / ``auction_case_id`` (auction)
+    is expected to be set per row -- not enforced with a DB CHECK
+    constraint in v1 (SQLite's ALTER TABLE support makes that annoying to
+    retrofit; revisit once this table needs stricter guarantees), but
+    every writer should treat it as an invariant.
+    """
+
     __tablename__ = "notification_logs"
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     property_id: Mapped[int | None] = mapped_column(ForeignKey("properties.id"))
+    auction_case_id: Mapped[int | None] = mapped_column(ForeignKey("auction_cases.id"))
     channel_id: Mapped[int] = mapped_column(BigInteger)
     kind: Mapped[str] = mapped_column(String(32))
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

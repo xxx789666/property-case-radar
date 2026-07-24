@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository status
 
-This repository now contains the sale-core v1 implementation. Use these commands:
+This repository now contains the v1 implementation of both pipelines (sale-core and the auction/法拍屋 vertical). Use these commands:
 
 - Install: `pip install -e .[dev]`
 - Test all: `pytest`
-- Test one file: `pytest tests/test_scoring.py`
+- Test one file: `pytest tests/test_scoring.py` (or `tests/test_auction_scoring.py`, etc.)
 - API: `uvicorn apps.api.main:app --reload`
 - Scheduler: `python -m apps.scheduler.main`
 - Migrations: `alembic upgrade head`
