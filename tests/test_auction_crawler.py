@@ -67,3 +67,18 @@ def test_document_extraction_and_dedup() -> None:
     assert is_unchanged({parsed.source_hash}, parsed) is True
     assert is_unchanged({"some-other-hash"}, parsed) is False
     assert is_unchanged(set(), parsed) is False
+
+
+def test_document_extraction_limits_title_to_database_width() -> None:
+    parser = CourtAnnouncementParser()
+    html = (
+        '<article class="court-announcement" data-kind="new"><dl>'
+        "<dt>法院</dt><dd>c</dd><dt>案號</dt><dd>n</dd></dl>"
+        '<ul class="documents"><li data-type="announcement">'
+        f'<a href="https://example.test/file.pdf">{"拍" * 300}</a>'
+        "</li></ul></article>"
+    )
+
+    [document] = extract_documents(parser.parse(html))
+
+    assert document.title == "拍" * 255

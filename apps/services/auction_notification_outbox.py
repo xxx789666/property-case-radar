@@ -140,6 +140,7 @@ async def deliver_pending_notifications(
     *,
     max_attempts: int = MAX_NOTIFY_ATTEMPTS,
     liquidity_index: float = 0.5,
+    limit: int | None = None,
 ) -> DeliveryReport:
     """Drain the outbox: attempt every pending/retryable ``NotificationLog`` row.
 
@@ -160,15 +161,19 @@ async def deliver_pending_notifications(
     from apps.services.auction_pipeline import rescore_case
     from database.repositories.auction import AuctionRepository
 
-    rows = list(
-        session.scalars(
-            select(NotificationLog)
-            .where(NotificationLog.status.in_(("pending", "failed")))
-            .where(NotificationLog.attempt_count < max_attempts)
-            .where(NotificationLog.auction_case_id.is_not(None))
-            .order_by(NotificationLog.id)
-        )
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be at least 1")
+
+    statement = (
+        select(NotificationLog)
+        .where(NotificationLog.status.in_(("pending", "failed")))
+        .where(NotificationLog.attempt_count < max_attempts)
+        .where(NotificationLog.auction_case_id.is_not(None))
+        .order_by(NotificationLog.id)
     )
+    if limit is not None:
+        statement = statement.limit(limit)
+    rows = list(session.scalars(statement))
 
     repo = AuctionRepository(session)
     attempted = delivered = failed = exhausted = 0

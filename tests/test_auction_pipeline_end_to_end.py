@@ -93,7 +93,7 @@ async def test_notifier_receives_new_case_and_status_event_calls(session_factory
         router = _make_router()
 
         result = await ingest_auction_announcements(source, parser, session)
-        assert result.notifications_queued > 0
+        assert result.notifications_queued == 1
 
         report = await deliver_pending_notifications(session, router)
 
@@ -105,8 +105,18 @@ async def test_notifier_receives_new_case_and_status_event_calls(session_factory
         # other 3 creations queue nothing. All status-change events queue
         # and deliver regardless, since build_status_update_notification
         # never needs a score.
-        assert report.delivered == result.notifications_queued
-        router.new_channel.send.assert_awaited()
+        assert report.delivered == 1
+        router.new_channel.send.assert_not_called()
+        router.round_channel.send.assert_not_called()
+        specialised_calls = sum(
+            channel.send.await_count
+            for channel in (
+                router.upcoming_channel,
+                router.high_score_channel,
+                router.suspended_channel,
+            )
+        )
+        assert specialised_calls == 1
 
 
 @pytest.mark.asyncio
@@ -115,7 +125,6 @@ async def test_notifier_failure_is_logged_not_raised_and_does_not_lose_committed
         source = FixtureAuctionAnnouncementSource("crawlers/auction/fixtures")
         parser = CourtAnnouncementParser()
         router = _make_router()
-        router.new_channel.send = AsyncMock(side_effect=RuntimeError("discord is down"))
 
         result = await ingest_auction_announcements(source, parser, session)
         assert result.created == 4  # DB writes happened regardless of delivery
@@ -127,15 +136,13 @@ async def test_notifier_failure_is_logged_not_raised_and_does_not_lose_committed
         assert case is not None
         assert case.status == AuctionStatus.AWARDED
 
-        # No exception propagated even though every "new" send raises.
+        # Aggregate-only new/round channels queue no per-case rows.
         report = await deliver_pending_notifications(session, router)
-        assert report.failed >= 1
+        assert report.failed == 0
 
         # Failed rows stay "failed" (retryable), not lost.
         failed_rows = session.query(NotificationLog).filter(NotificationLog.status == "failed").all()
-        assert len(failed_rows) == report.failed
-        assert all(row.attempt_count == 1 for row in failed_rows)
-        assert all(row.last_error and "discord is down" in row.last_error for row in failed_rows)
+        assert failed_rows == []
 
 
 @pytest.mark.asyncio
@@ -146,9 +153,9 @@ async def test_rerunning_ingest_does_not_resend_notifications(session_factory) -
         router = _make_router()
 
         first = await ingest_auction_announcements(source, parser, session)
-        assert first.notifications_queued > 0
+        assert first.notifications_queued == 0
         first_report = await deliver_pending_notifications(session, router)
-        assert first_report.delivered > 0
+        assert first_report.delivered == 0
         call_count_after_first = router.new_channel.send.await_count
 
         # Re-running ingest against the same unchanged fixtures queues
@@ -175,7 +182,8 @@ def test_scheduler_make_auction_job_wires_notifier_end_to_end(session_factory) -
     job = make_auction_job(session_factory, source, parser, notifier=router)
     job()  # synchronous APScheduler-style callable; wraps the asyncio.run internally
 
-    router.new_channel.send.assert_awaited()
+    router.new_channel.send.assert_not_called()
+    router.round_channel.send.assert_not_called()
     with session_factory() as session:
         case = AuctionRepository(session).get_by_case_number("台北地方法院", "115年度司執字第67890號")
         assert case.status == AuctionStatus.AWARDED

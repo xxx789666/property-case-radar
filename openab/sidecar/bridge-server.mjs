@@ -29,7 +29,21 @@ const HOST = process.env.ACP_SIDECAR_LISTEN_HOST || "0.0.0.0";
 // from this env var even though it's operator-controlled configuration,
 // not attacker-controlled input.
 const AGENT_COMMAND = process.env.ACP_AGENT_COMMAND || "codex-acp";
-const AGENT_ARGS = (process.env.ACP_AGENT_ARGS || "").split(" ").filter((part) => part.length > 0);
+let AGENT_ARGS;
+if (process.env.ACP_AGENT_ARGS_JSON) {
+  try {
+    AGENT_ARGS = JSON.parse(process.env.ACP_AGENT_ARGS_JSON);
+  } catch (err) {
+    auditLog("fatal", { reason: `ACP_AGENT_ARGS_JSON is not valid JSON: ${err.message}` });
+    process.exit(2);
+  }
+  if (!Array.isArray(AGENT_ARGS) || !AGENT_ARGS.every((item) => typeof item === "string")) {
+    auditLog("fatal", { reason: "ACP_AGENT_ARGS_JSON must be a JSON array of strings" });
+    process.exit(2);
+  }
+} else {
+  AGENT_ARGS = (process.env.ACP_AGENT_ARGS || "").split(" ").filter((part) => part.length > 0);
+}
 // codex-acp discovers AGENTS.md from its own working directory (it does
 // not traverse above it) -- this must match where AGENTS.md is actually
 // COPYed to in Dockerfile.sidecar.
@@ -78,6 +92,15 @@ function handleConnection(socket) {
   let bytesFromAgent = 0;
   let shuttingDown = false;
   let halfCloseTimer = null;
+  let forceTimer = null;
+  let childClosed = false;
+  let socketClosed = false;
+
+  function finishShutdownIfClosed() {
+    if (!shuttingDown || !childClosed || !socketClosed || !forceTimer) return;
+    clearTimeout(forceTimer);
+    forceTimer = null;
+  }
 
   // crashed=true drives an ABORTIVE close (TCP RST via resetAndDestroy(),
   // Node >=16.17) instead of a graceful FIN (socket.end()) -- this is what
@@ -94,7 +117,7 @@ function handleConnection(socket) {
       halfCloseTimer = null;
     }
     auditLog("connection_close", { connectionId, reason, crashed, bytesToAgent, bytesFromAgent });
-    const forceTimer = setTimeout(() => {
+    forceTimer = setTimeout(() => {
       auditLog("connection_close_forced", { connectionId, reason: "graceful shutdown exceeded bound" });
       try {
         child.kill("SIGKILL");
@@ -109,12 +132,14 @@ function handleConnection(socket) {
     }, SHUTDOWN_TIMEOUT_MS);
     forceTimer.unref();
     try {
-      child.kill("SIGTERM");
+      if (!childClosed) child.kill("SIGTERM");
     } catch {
       // already gone
     }
     try {
-      if (crashed) {
+      if (socketClosed) {
+        // already gone
+      } else if (crashed) {
         socket.resetAndDestroy();
       } else {
         socket.end();
@@ -122,6 +147,7 @@ function handleConnection(socket) {
     } catch {
       // already gone
     }
+    finishShutdownIfClosed();
   }
 
   socket.on("data", (chunk) => {
@@ -145,7 +171,11 @@ function handleConnection(socket) {
   child.stdout.pipe(socket, { end: false });
 
   socket.on("error", (err) => shutdown(`socket_error: ${err.message}`, { crashed: true }));
-  socket.on("close", () => shutdown("socket_closed"));
+  socket.on("close", () => {
+    socketClosed = true;
+    if (shuttingDown) finishShutdownIfClosed();
+    else shutdown("socket_closed");
+  });
   socket.on("end", () => {
     // Client half-closed (its own stdin ended) -- half-close towards the
     // agent so it can finish, without forcing an immediate kill. Bounded:
@@ -171,8 +201,10 @@ function handleConnection(socket) {
   // responses by ending the socket before the last chunk(s) had been
   // written out. See tests/test_openab_bridge.py's large-payload test.
   child.on("close", (code, signal) => {
+    childClosed = true;
     const crashed = signal !== null || (typeof code === "number" && code !== 0);
-    shutdown(`agent_exited: code=${code} signal=${signal}`, { crashed });
+    if (shuttingDown) finishShutdownIfClosed();
+    else shutdown(`agent_exited: code=${code} signal=${signal}`, { crashed });
   });
 }
 

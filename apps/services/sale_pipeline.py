@@ -9,6 +9,7 @@ from database.models.common import MarketPrice
 from database.models.sale import Property
 from database.repositories.sale import PropertyRepository
 from scoring.sale_score import SaleScoreInput, score_sale
+from notifications.sale_notification import SaleNotificationRouter
 
 
 @dataclass(frozen=True)
@@ -24,11 +25,18 @@ def _completeness(item: object) -> float:
     return present / len(fields)
 
 
-async def ingest_sale_listings(crawler: SaleCrawler, session: Session) -> IngestResult:
+async def ingest_sale_listings(
+    crawler: SaleCrawler,
+    session: Session,
+    *,
+    notifier: SaleNotificationRouter | None = None,
+    notify_new: bool = True,
+) -> IngestResult:
     repository = PropertyRepository(session)
     listings = await crawler.fetch()
     created_count = 0
     price_drops = 0
+    notification_events: list[tuple[Property, bool, bool]] = []
     for listing in listings:
         previous = session.scalar(
             select(Property).where(
@@ -38,13 +46,19 @@ async def ingest_sale_listings(crawler: SaleCrawler, session: Session) -> Ingest
         )
         previous_price = previous.total_price_twd if previous else listing.total_price_twd
         item, created, dropped = repository.upsert_listing(listing)
-        market = session.scalar(
-            select(MarketPrice).where(
-                MarketPrice.city == item.city,
-                MarketPrice.district == item.district,
-                MarketPrice.building_type == (item.building_type or "住宅"),
+        market = None
+        if item.building_type != "土地":
+            market = session.scalar(
+                select(MarketPrice).where(
+                    MarketPrice.city == item.city,
+                    MarketPrice.district == item.district,
+                    MarketPrice.building_type == (
+                        item.building_type
+                        if item.building_type in {"住宅", "店面"}
+                        else "住宅"
+                    ),
+                )
             )
-        )
         if market:
             drop_rate = max(0.0, 1 - item.total_price_twd / previous_price)
             score = score_sale(
@@ -63,5 +77,14 @@ async def ingest_sale_listings(crawler: SaleCrawler, session: Session) -> Ingest
             item.score = score.total
         created_count += int(created)
         price_drops += int(dropped)
+        notification_events.append((item, created, dropped))
     session.commit()
+    if notifier is not None:
+        for item, created, dropped in notification_events:
+            await notifier.publish(
+                item,
+                created=created,
+                price_dropped=dropped,
+                send_new=notify_new,
+            )
     return IngestResult(processed=len(listings), created=created_count, price_drops=price_drops)

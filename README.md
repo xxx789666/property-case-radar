@@ -1,22 +1,23 @@
 # 台灣房地產案件雷達
 
 共用基礎（FastAPI、PostgreSQL/SQLAlchemy、APScheduler、實價登錄共用模型
-`market_prices`、Discord bot 行程）之上，包含兩條依 CLAUDE.md 保持獨立的
+`market_prices`、Discord 互動行程）之上，包含兩條依 CLAUDE.md 保持獨立的
 垂直線：
 
 - **一般出售物件**：`crawlers/sale`、`scoring/sale_score.py`、
   `notifications/sale_notification.py`、`database/models/sale.py`、
-  `apps/services/sale_pipeline.py`、Discord `/house` 指令。
+  `apps/services/sale_pipeline.py`。
 - **法拍屋案件**：`crawlers/auction`、`scoring/auction_score.py`、
   `notifications/auction_notification.py`、`database/models/auction.py`、
-  `apps/services/auction_pipeline.py`（含拍次/狀態機）、Discord `/auction`
-  指令。法拍底價/得標價/實價登錄比對一律使用整數台幣（`*_twd`），與
+  `apps/services/auction_pipeline.py`（含拍次/狀態機）。法拍底價/得標價/
+  實價登錄比對一律使用整數台幣（`*_twd`），與
   `market_prices.average_unit_price_twd` 同單位，避免萬元／元混用。
 
 ## 安全與合規
 
-- `FixtureSaleCrawler`／`FixtureAuctionAnnouncementSource` 是預設且唯一可
-  執行的來源，不會連線 591、信義房屋或任何法院公告網站。
+- 一般出售物件由 `SALE_CAPTURE_SCRIPT` 指向 591 公開售屋頁面的 Playwright
+  擷取腳本；法拍來源則由 `AUCTION_CAPTURE_SCRIPT` 指向核准的 MOJ 擷取腳本。
+  兩者都不登入、不解 CAPTCHA，也不繞過網站存取限制。
 - `SaleCrawler`／`AuctionAnnouncementSource` 的合約禁止繞過登入、付費牆、
   CAPTCHA、反爬與速率限制。
 - 新增真實 adapter 前，需先確認來源條款，只能存取核准的公開頁面/API，並保留
@@ -42,39 +43,72 @@ uvicorn apps.api.main:app --reload
 API：`GET /health`、`GET /api/v1/properties`、`GET /api/v1/properties/{id}`。
 OpenAPI 位於 `/docs`。
 
-排程器每 60–120 分鐘讀取一般出售物件 fixture、每 6–12 小時（預設 8 小時，對
-應「每天 2～4 次」）讀取法拍公告 fixture：
+排程器每日執行一次指定的 MOJ 法拍擷取腳本，解析其下載的官方案件明細 HTML，
+再送入既有案件狀態、評分、資料庫與通知流程。預設路徑為
+`D:\網頁識別認證\capture_auction_results.py`：
 
 ```powershell
 python -m apps.scheduler.main
 ```
 
-Discord bot：
+擷取腳本需要 Playwright、Chromium、`requests`，以及可連線的 Umi-OCR
+（預設 `http://127.0.0.1:1224/api/ocr`）。排程會先檢查服務；若尚未啟動，
+會在背景執行 `D:\Umi-OCR_Paddle_v2.1.5\Umi-OCR.exe`，等待 API 就緒後再抓取。
+可用
+`AUCTION_CAPTURE_ENABLED=false` 暫停法拍排程。
+
+一般售屋排程每 24 小時執行一次
+`D:\網頁識別認證\capture_sale_results.py`，抓取 22 縣市各自最新三頁公開物件並送入售屋
+資料庫、評分及 Discord 通知流程。第一次基準匯入不推播既有物件；新上架頻道
+每天只推播一則各縣市新增數量摘要，不逐案推播。降價與新出現的高分物件仍由
+各自頻道通知。可用 `SALE_CAPTURE_ENABLED=false` 暫停此排程。
+物件連續 3 天未在最新三頁再次出現時，排程會開啟其 591 公開原始網址驗證；
+只有頁面明確顯示不存在、關閉或下架才標記為 `inactive`。網路錯誤、驗證頁或
+無法辨識的回應不改狀態，歷史資料也不刪除。
+
+Discord 自然語言查詢目前由 OpenAB 提供。使用者在限定頻道標記
+`@Property Case Radar` 後，Bot 自動建立討論串並在串內回答；後續問題不必再次
+標記。舊 `Property Case Radar Commands` 程序不再啟動，guild/global slash
+commands 已清空。
 
 ```powershell
-$env:DISCORD_TOKEN = "僅放在本機環境，不要寫入檔案或版本庫"
-python -m apps.discord_bot.main
+python scripts/bootstrap_openab_windows.py
+powershell -ExecutionPolicy Bypass -File scripts/install_openab_windows.ps1
+powershell -ExecutionPolicy Bypass -File scripts/register_openab_tasks.ps1
 ```
 
-Bot 只要求 guild 權限，不啟用 message content intent。單一 bot process 在
-`setup_hook` 同時 `add_cog` HouseCog 與 AuctionCog，指令同步到
-`1530072733818556538`。`/house` 查詢限制在私人頻道 `1530076451242508318`；
-`/auction` 查詢限制在私人頻道 `1530076529751756870`。公告頻道由設定提供：
+OpenAB 僅接受私人搜尋頻道 `1530076451242508318`、`1530076529751756870`
+與設定中的使用者白名單。資料庫存取使用 `radar_agent_ro` 專用唯讀角色；
+每次查詢寫入 `logs/openab-query.jsonl`，gateway 與 sidecar 分別寫入
+`logs/openab-gateway.log`、`logs/openab-sidecar.log`。Windows 登入後由
+`Property Case Radar OpenAB Gateway` 與
+`Property Case Radar OpenAB Sidecar` 排程自動啟動。
 
-一般出售物件：新上架 `1530073991442595880`、降價 `1530075359490609202`、
-高分物件 `1530075382873587855`。
+一般售屋查詢請在 `1530076451242508318` 標記 Bot，例如：
+`@Property Case Radar 幫我查詢桃園中壢區 1500 萬以內案件`。Agent 會固定轉成
+`house-search --city 桃園市 --district 中壢區 --max-total-price-twd 15000000`
+的唯讀資料庫查詢。
+同一入口也支援 591 公開土地資料；「土地／農地／建地」會分別轉成
+`--property-type land / farmland / building_land`，並以土地坪數及土地單價呈現。
 
-法拍屋案件：新公告 `1530075570140876982`、即將開標 `1530075622636781639`、
-二拍三拍 `1530075673052577922`、高分案件 `1530075701150089409`、停拍撤回
+公告頻道由設定提供：
+
+一般出售物件：每日各縣市新增統計 `1530073991442595880`（不逐案推播）、
+降價 `1530075359490609202`、高分物件 `1530075382873587855`。
+
+法拍屋案件：每日各縣市新增統計 `1530075570140876982`（不逐案推播）、
+每日各縣市二拍與三拍新增統計 `1530075673052577922`（分兩則、不逐案推播）、高分案件 `1530075701150089409`、停拍撤回
 `1530075739750268989`。
 
-本輪不執行 Discord live smoke。部署窗口可在只有一個 bot process 時設定 token
-後執行上述 bot 指令，確認 `/house latest` 與 `/auction latest`。
+## Legacy Commands Bot（已停用）
 
-## Production RadarBot container
+`apps.discord_bot` 與 `radarbot` Compose profile 保留作歷史相容程式碼，但目前
+不建立程序、不建立 Windows 排程，也不註冊 `/house`、`/auction` 指令。查詢
+統一從 `@Property Case Radar` 的 OpenAB 討論串進入。
 
-The opt-in `radarbot` Compose profile runs only the deterministic Discord
-slash-command process. It never starts `apps.scheduler.main` or a crawler.
+The legacy `radarbot` Compose profile runs only the deterministic Discord
+slash-command process when explicitly requested. It never starts
+`apps.scheduler.main` or a crawler.
 The container is non-root, read-only, capability-free, attached only to the
 internal `radar-db-net` and its dedicated `radar-bot-egress`, and receives
 both credentials as file-based Docker secrets:
@@ -105,7 +139,7 @@ never either secret.
 ## Production official-data scheduler
 
 The opt-in `scheduler` profile is a separate hardened process. It downloads
-only the Ministry of the Interior's licensed current actual-price sales batch
+the Ministry of the Interior's licensed current actual-price sales batch
 from `https://plvr.land.moi.gov.tw/opendata/lvr_landAcsv.zip`, identifies
 itself with a project User-Agent, limits requests to at most one per second,
 uses bounded retries/timeouts/size and record limits, and revalidates its
@@ -122,20 +156,16 @@ docker compose --profile scheduler up -d scheduler
 docker compose --profile scheduler ps
 ```
 
-Live unattended auction crawling is currently fail-closed:
+The host scheduler can additionally run the configured MOJ capture script.
+The hardened Docker profile keeps that host-only integration disabled because
+it has no D: drive mount, Chromium runtime, or route to the local Umi-OCR
+process.
 
-- Judicial Yuan `aomp109.judicial.gov.tw/robots.txt` returns
-  `User-agent: *` and `Disallow: /`.
-- The approved official Ministry of Justice Administrative Enforcement
-  Agency replacement permits HTML in robots.txt, but `/Estate/Query` requires
-  a CAPTCHA for every fresh query.
+Judicial Yuan remains unused. The host integration uses the Ministry of
+Justice Administrative Enforcement Agency source selected by the operator;
+it does not substitute 591/Sinyi/private realtor data.
 
-The code therefore does not solve/replay CAPTCHA values, submit controlled
-queries, or substitute 591/Sinyi/private realtor data. Auction fixtures remain
-test-only, and pending auction outbox rows are not drained by this scheduler
-until a compliant official current-auction feed is available and reviewed.
-
-## `/house` 指令
+## 舊 `/house` 指令（程式碼保留，Discord 已取消註冊）
 
 - `/house search`：城市、行政區、總價、坪數、屋齡、折價率篩選
 - `/house subscribe`：建立使用者訂閱
@@ -144,7 +174,7 @@ until a compliant official current-auction feed is available and reviewed.
 - `/house compare`：掛牌與區域行情比較
 - `/house unsubscribe`：取消自己的訂閱
 
-## `/auction` 指令
+## 舊 `/auction` 指令（程式碼保留，Discord 已取消註冊）
 
 - `/auction search`：縣市、行政區、類型、底價上限、拍次、點交篩選
 - `/auction subscribe`：建立使用者訂閱
@@ -154,18 +184,13 @@ until a compliant official current-auction feed is available and reviewed.
 - `/auction risk`：點交／產權風險評分
 - `/auction unsubscribe`：取消自己的訂閱
 
-## Discord LLM 互動層（選用，預設不啟動）
+## Discord LLM 互動層（目前正式入口）
 
 `openab/` 提供以 OpenAB 0.10.0-beta.2 + Codex ACP 為基礎的自然語言問答層，
-限定在 `/house`、`/auction search` 使用的同兩個私人頻道，讀取 Radar 資料庫
-（唯讀，`tools/radar_agent_query.py`）。**必須使用第二個獨立 Discord bot／
-token**，不得與本節上方的 `DISCORD_TOKEN`／RadarBot 共用（同一 token 開兩個
-Gateway session 不是 Discord 支援的用法）。詳見 `openab/README.md`（架構、
-token 邊界、頻道白名單、機密管理、版本鎖定、bootstrap 步驟、離線驗證指令）。
-2026-07-24 的 bounded live Discord smoke 已確認獨立 bot 可登入，且 `/house`
-與 `/auction` 指令同步成功；但頻道 `1530076529751756870` 缺少
-`Send Messages` 權限，因此尚無法完成 in-channel 回覆驗證。此變更未修改
-Discord 權限，也未將任何真實 token 寫入 repository。
+限定在兩個私人搜尋頻道，透過專用唯讀角色與
+`tools/radar_agent_query.py` 讀取 Radar 資料庫。Windows 原生部署將 Discord
+gateway 與持有資料庫 secret 的 ACP sidecar 分成兩個程序，僅以 loopback TCP
+橋接；secret 與下載的執行檔均位於 gitignored 目錄。詳見 `openab/README.md`。
 
 ## 測試
 

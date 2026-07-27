@@ -11,7 +11,7 @@ from sqlalchemy import text
 from apps.discord_bot.container_main import _read_required_secret
 
 
-def _write_ready(path_text: str) -> None:
+def _write_ready(path_text: str, *, auction_live_enabled: bool) -> None:
     path = Path(path_text)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
@@ -20,7 +20,7 @@ def _write_ready(path_text: str) -> None:
             {
                 "status": "ready",
                 "source": "moi-official-open-data",
-                "auction_live_enabled": False,
+                "auction_live_enabled": auction_live_enabled,
             },
             ensure_ascii=True,
         ),
@@ -48,7 +48,10 @@ def main() -> None:
     engine = create_db_engine(settings.database_url)
     with engine.connect() as connection:
         connection.execute(text("SELECT 1"))
-    _write_ready(os.environ.get("SCHEDULER_READY_FILE", "/run/radar-scheduler/ready.json"))
+    _write_ready(
+        os.environ.get("SCHEDULER_READY_FILE", "/run/radar-scheduler/ready.json"),
+        auction_live_enabled=settings.auction_capture_enabled,
+    )
     run_scheduler()
 
 

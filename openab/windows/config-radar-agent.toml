@@ -1,0 +1,44 @@
+# Native Windows OpenAB configuration template.
+# The Discord token placeholder is rendered from
+# openab/.local/openab_discord_bot_token at startup. The gateway process
+# never receives DATABASE_URL; it can only spawn the byte-only bridge client
+# which connects to the local sidecar on loopback.
+
+[discord]
+bot_token = "${OPENAB_DISCORD_BOT_TOKEN}"
+allowed_channels = [
+  "1530076451242508318",  # 房地案件-搜尋
+  "1530076529751756870",  # 法拍案件-搜尋
+]
+allowed_users = [
+  "843428445802725388",
+]
+allow_dm = false
+allow_bot_messages = "off"
+# Main channel requires @Property Case Radar. Once OpenAB creates a thread,
+# ordinary follow-up messages in that bot-owned thread are accepted.
+allow_user_messages = "involved"
+message_processing_mode = "per-thread"
+
+[agent]
+command = "node"
+args = ["${RADAR_BRIDGE_CLIENT}"]
+# This must be the directory containing the Radar-specific AGENTS.md.
+# codex-acp uses the session cwd for project-instruction discovery.
+working_dir = "${RADAR_AGENT_WORKING_DIR}"
+env = { ACP_SIDECAR_HOST = "127.0.0.1", ACP_SIDECAR_PORT = "18765" }
+
+[pool]
+max_sessions = 2
+session_ttl_hours = 4
+# The Codex process needs loopback PostgreSQL access. Database mutation is
+# independently blocked by the dedicated radar_agent_ro PostgreSQL role and
+# by tools/radar_agent_query.py's per-invocation privilege verification.
+default_config_options = { mode = "agent-full-access" }
+
+[reactions]
+enabled = true
+remove_after_reply = false
+# Discord only receives the final natural-language answer. Shell commands,
+# tool titles and tool-call progress remain in local operational/audit logs.
+tool_display = "none"

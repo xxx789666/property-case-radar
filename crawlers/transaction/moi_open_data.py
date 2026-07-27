@@ -15,6 +15,7 @@ import csv
 import io
 import json
 import os
+import ssl
 import time
 import zipfile
 from collections import defaultdict
@@ -24,6 +25,7 @@ from pathlib import Path
 from statistics import fmean
 
 import httpx
+import truststore
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -283,6 +285,7 @@ class MoiActualPriceSource:
         client = self._client or httpx.AsyncClient(
             timeout=httpx.Timeout(self.timeout_seconds),
             follow_redirects=False,
+            verify=truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT),
         )
         try:
             response: httpx.Response | None = None

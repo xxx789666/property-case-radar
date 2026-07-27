@@ -226,13 +226,12 @@ def channels_for_new_case(
 ) -> list[str]:
     if case.status not in ACTIVE_STATUSES:
         return []
-    kinds = ["new"]
-    if (case.round_number or 0) >= 2:
-        kinds.append("round")
+    # The new-announcement channel is reserved for one daily county/city
+    # aggregate. Individual cases continue to route to the specialised
+    # round/high-score/upcoming channels below.
+    kinds: list[str] = []
     if score.total >= high_score_threshold:
         kinds.append("high_score")
-    if _is_upcoming(case, within_days=upcoming_within_days):
-        kinds.append("upcoming")
     return kinds
 
 
@@ -244,13 +243,8 @@ def channels_for_status_event(
     if event.to_status == AuctionStatus.AWARDED:
         return []
     if event.to_status == AuctionStatus.FAILED:
-        return ["round"] if (case.round_number or 0) >= 2 else []
-    kinds = ["new"]
-    if (case.round_number or 0) >= 2:
-        kinds.append("round")
-    if _is_upcoming(case, within_days=upcoming_within_days):
-        kinds.append("upcoming")
-    return kinds
+        return []
+    return []
 
 
 class MessageChannel(Protocol):

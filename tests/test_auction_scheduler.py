@@ -27,10 +27,10 @@ def test_scheduler_registers_both_jobs_when_auction_job_given() -> None:
     assert auction_job.max_instances == 1
 
 
-def test_auction_job_defaults_to_eight_hour_interval_when_unset() -> None:
+def test_auction_job_defaults_to_daily_interval_when_unset() -> None:
     scheduler = build_scheduler(lambda: None, 90, auction_job=lambda: None)
     job = scheduler.get_job("auction-crawler")
-    assert job.trigger.interval.total_seconds() == 8 * 3600
+    assert job.trigger.interval.total_seconds() == 24 * 3600
 
 
 def test_make_live_auction_job_delivers_through_the_full_production_wiring(session_factory) -> None:

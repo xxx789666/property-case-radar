@@ -66,3 +66,61 @@ async def test_notification_router_uses_configured_routes(session_factory) -> No
     new_channel.send.assert_awaited_once()
     drop_channel.send.assert_not_called()
     high_channel.send.assert_awaited_once()
+
+
+async def test_notification_router_does_not_repeat_unchanged_high_score(session_factory) -> None:
+    with session_factory() as session:
+        item, _, _ = PropertyRepository(session).upsert_listing(
+            SaleListing(
+                source="fixture",
+                source_property_id="unchanged-high",
+                url="https://example.invalid/unchanged-high",
+                city="桃園市",
+                district="中壢區",
+                total_price_twd=12_800_000,
+                unit_price_per_ping_twd=351_000,
+                building_area_ping=Decimal("36.5"),
+                score=90,
+            )
+        )
+        router = SaleNotificationRouter(
+            new_channel=AsyncMock(),
+            price_drop_channel=AsyncMock(),
+            high_score_channel=AsyncMock(),
+            high_score_threshold=80,
+        )
+        kinds = await router.publish(item, created=False, price_dropped=False)
+    assert kinds == []
+    router.high_score_channel.send.assert_not_called()
+
+
+async def test_notification_router_can_suppress_per_item_new_message(session_factory) -> None:
+    with session_factory() as session:
+        item, _, _ = PropertyRepository(session).upsert_listing(
+            SaleListing(
+                source="fixture",
+                source_property_id="daily-count-only",
+                url="https://example.invalid/daily-count-only",
+                city="桃園市",
+                district="中壢區",
+                total_price_twd=12_800_000,
+                unit_price_per_ping_twd=351_000,
+                building_area_ping=Decimal("36.5"),
+                score=90,
+            )
+        )
+        router = SaleNotificationRouter(
+            new_channel=AsyncMock(),
+            price_drop_channel=AsyncMock(),
+            high_score_channel=AsyncMock(),
+            high_score_threshold=80,
+        )
+        kinds = await router.publish(
+            item,
+            created=True,
+            price_dropped=False,
+            send_new=False,
+        )
+    assert kinds == ["high_score"]
+    router.new_channel.send.assert_not_called()
+    router.high_score_channel.send.assert_awaited_once()

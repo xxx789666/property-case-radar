@@ -72,11 +72,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Iterator
 
 from sqlalchemy import Engine, create_engine, desc, event, select, text
@@ -90,9 +93,47 @@ from notifications.auction_masking import display_debtor_owner
 
 MAX_LIMIT = 50
 DATABASE_URL_ENV_VAR = "DATABASE_URL"
+AUDIT_LOG_ENV_VAR = "RADAR_AGENT_QUERY_LOG"
+AUCTION_DOWNLOAD_DIR_ENV_VAR = "RADAR_AUCTION_DOWNLOAD_DIR"
 _ALLOWED_URL_PREFIXES = ("postgresql+psycopg://", "sqlite+pysqlite://")
 
 _EAGER_LOAD = (selectinload(AuctionCase.rounds),)
+
+
+def _original_auction_pdf_files(case: AuctionCase) -> list[str]:
+    """Return only official captured PDF filenames for this case.
+
+    The download root is operator-controlled.  User/database strings are
+    treated only as path components and every candidate is resolved back
+    under that root before any directory is read.  ``案件詳細資料.pdf`` and
+    generated summaries are intentionally excluded: only capture-program
+    files named ``<case_number>_<n>_<n>.pdf`` count as court originals.
+    """
+
+    raw_root = os.environ.get(AUCTION_DOWNLOAD_DIR_ENV_VAR, "").strip()
+    if not raw_root or not re.fullmatch(r"[0-9]+", case.case_number or ""):
+        return []
+    root = Path(raw_root).resolve()
+    candidates = []
+    if case.city and case.district:
+        candidates.append(root / case.city / case.district / case.case_number)
+    if case.city:
+        candidates.append(root / case.city / case.case_number)
+    candidates.append(root / case.case_number)  # legacy capture layout
+    filename_pattern = re.compile(rf"^{re.escape(case.case_number)}_[0-9]+_[0-9]+\.pdf$", re.IGNORECASE)
+    found: set[str] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            continue
+        if not resolved.is_dir():
+            continue
+        for item in resolved.iterdir():
+            if item.is_file() and filename_pattern.fullmatch(item.name):
+                found.add(item.name)
+    return sorted(found)
 
 
 class FailClosed(RuntimeError):
@@ -111,6 +152,7 @@ def _num(value: Any) -> Any:
 def _serialize_property(item: Property) -> dict[str, Any]:
     return {
         "id": item.id,
+        "source_property_id": item.source_property_id,
         "city": item.city,
         "district": item.district,
         "address": item.address,
@@ -163,6 +205,7 @@ def _serialize_auction_case(case: AuctionCase) -> dict[str, Any]:
         "risk_score": _num(case.risk_score),
         "investment_score": _num(case.investment_score),
         "announcement_url": case.announcement_url or None,
+        "original_pdf_files": _original_auction_pdf_files(case),
     }
 
 
@@ -173,6 +216,52 @@ def _clamp_limit(limit: int) -> int:
 @dataclass(frozen=True)
 class ToolError:
     error: str
+
+
+def _audit_arguments(args: argparse.Namespace) -> dict[str, Any]:
+    """Return only user-facing filters, never callables or environment data."""
+    return {
+        key: value
+        for key, value in vars(args).items()
+        if key not in {"handler", "command"} and value is not None
+    }
+
+
+def _write_audit_log(
+    args: argparse.Namespace,
+    *,
+    outcome: str,
+    result: Any = None,
+    error: str | None = None,
+    elapsed_ms: int,
+) -> None:
+    path_value = os.environ.get(AUDIT_LOG_ENV_VAR)
+    if not path_value:
+        return
+    record: dict[str, Any] = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "component": "radar-agent-query",
+        "command": args.command,
+        "arguments": _audit_arguments(args),
+        "outcome": outcome,
+        "elapsed_ms": elapsed_ms,
+    }
+    if isinstance(result, list):
+        record["result_count"] = len(result)
+    elif result is not None and not isinstance(result, ToolError):
+        record["result_count"] = 1
+    if error:
+        record["error"] = error
+
+    try:
+        path = os.path.abspath(path_value)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8", newline="\n") as stream:
+            stream.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except OSError as exc:
+        # A logging outage must be visible, but must not turn a valid,
+        # read-only database query into a fabricated "no data" answer.
+        print(f"radar_agent_query: cannot append audit log: {exc}", file=sys.stderr)
 
 
 # --- read-only database boundary ----------------------------------------
@@ -427,7 +516,31 @@ def _house_search(session: Session, args: argparse.Namespace) -> Any:
         stmt = stmt.where(Property.age_years <= Decimal(str(args.max_age_years)))
     if args.min_discount_rate is not None:
         stmt = stmt.where(Property.discount_rate >= Decimal(str(args.min_discount_rate)))
-    stmt = stmt.order_by(desc(Property.score), desc(Property.first_seen_at)).limit(_clamp_limit(args.limit))
+    property_type = getattr(args, "property_type", None)
+    if property_type == "house":
+        stmt = stmt.where(Property.building_type != "土地")
+    elif property_type == "land":
+        stmt = stmt.where(Property.building_type == "土地")
+    elif property_type == "farmland":
+        stmt = stmt.where(Property.building_type == "土地", Property.usage.contains("農地"))
+    elif property_type == "building_land":
+        stmt = stmt.where(Property.building_type == "土地", Property.usage.contains("建地"))
+    elif property_type == "residential_land":
+        stmt = stmt.where(Property.building_type == "土地", Property.usage.contains("住宅用地"))
+    elif property_type == "commercial_land":
+        stmt = stmt.where(Property.building_type == "土地", Property.usage.contains("商業用地"))
+    elif property_type == "industrial_land":
+        stmt = stmt.where(Property.building_type == "土地", Property.usage.contains("工業用地"))
+    elif property_type == "forest_land":
+        stmt = stmt.where(Property.building_type == "土地", Property.usage.contains("林地"))
+    elif property_type == "hillside_land":
+        stmt = stmt.where(Property.building_type == "土地", Property.usage.contains("山坡地"))
+    elif property_type == "road_land":
+        stmt = stmt.where(Property.building_type == "土地", Property.usage.contains("道路用地"))
+    stmt = stmt.order_by(
+        desc(Property.score).nullslast(),
+        desc(Property.first_seen_at),
+    ).limit(_clamp_limit(args.limit))
     return [_serialize_property(item) for item in session.scalars(stmt)]
 
 
@@ -529,6 +642,22 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-building-area-ping", type=float, dest="min_building_area_ping")
     p.add_argument("--max-age-years", type=float, dest="max_age_years")
     p.add_argument("--min-discount-rate", type=float, dest="min_discount_rate")
+    p.add_argument(
+        "--property-type",
+        choices=(
+            "house",
+            "land",
+            "farmland",
+            "building_land",
+            "residential_land",
+            "commercial_land",
+            "industrial_land",
+            "forest_land",
+            "hillside_land",
+            "road_land",
+        ),
+        dest="property_type",
+    )
     p.add_argument("--limit", type=int, default=10)
     p.set_defaults(handler=_house_search)
 
@@ -577,18 +706,38 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = _build_parser()
     args = parser.parse_args(argv)
+    started = time.perf_counter()
 
     try:
         with _read_only_session() as session:
             result = args.handler(session, args)
     except FailClosed as exc:
+        _write_audit_log(
+            args,
+            outcome="fail_closed",
+            error=str(exc),
+            elapsed_ms=round((time.perf_counter() - started) * 1000),
+        )
         print(f"radar_agent_query: {exc}", file=sys.stderr)
         return 2
 
     if isinstance(result, ToolError):
+        _write_audit_log(
+            args,
+            outcome="not_found",
+            result=result,
+            error=result.error,
+            elapsed_ms=round((time.perf_counter() - started) * 1000),
+        )
         json.dump({"error": result.error}, sys.stdout, ensure_ascii=False)
         print()
         return 1
+    _write_audit_log(
+        args,
+        outcome="ok",
+        result=result,
+        elapsed_ms=round((time.perf_counter() - started) * 1000),
+    )
     json.dump(result, sys.stdout, ensure_ascii=False, indent=2)
     print()
     return 0

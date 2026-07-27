@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -15,8 +16,14 @@ class Settings(BaseSettings):
     discord_sale_price_drop_channel_id: int = 1530075359490609202
     discord_sale_high_score_channel_id: int = 1530075382873587855
     discord_sale_search_channel_id: int = 1530076451242508318
-    sale_crawl_interval_minutes: int = Field(default=90, ge=60, le=120)
+    sale_crawl_interval_minutes: int = Field(default=1440, ge=1440, le=10080)
     sale_high_score_threshold: int = Field(default=80, ge=0, le=100)
+    sale_capture_enabled: bool = True
+    sale_capture_script: Path = Path(r"D:\網頁識別認證\capture_sale_results.py")
+    sale_capture_output_dir: Path = Path(r"D:\網頁識別認證\sale_json")
+    sale_capture_max_pages: int = Field(default=3, ge=1, le=20)
+    sale_status_missing_days: int = Field(default=3, ge=1, le=30)
+    sale_status_verify_limit: int = Field(default=500, ge=1, le=2000)
     crawler_min_delay_seconds: float = Field(default=2, ge=0)
     crawler_max_delay_seconds: float = Field(default=5, ge=0)
 
@@ -30,15 +37,23 @@ class Settings(BaseSettings):
     discord_auction_high_score_channel_id: int = 1530075701150089409
     discord_auction_suspended_channel_id: int = 1530075739750268989
     discord_auction_search_channel_id: int = 1530076529751756870
-    # spec section 十二: 法拍公告爬蟲每天 2～4 次 -> an interval of 6-12h.
-    auction_crawl_interval_hours: int = Field(default=8, ge=6, le=12)
+    # 法拍公告爬蟲每天一次；允許營運端調低頻率，但不可高於每日一次。
+    auction_crawl_interval_hours: int = Field(default=24, ge=24, le=168)
     auction_high_score_threshold: int = Field(default=80, ge=0, le=100)
     auction_upcoming_within_days: int = Field(default=7, ge=1, le=30)
+    auction_capture_enabled: bool = True
+    auction_capture_script: Path = Path(r"D:\網頁識別認證\capture_auction_results.py")
+    auction_capture_output_dir: Path = Path(r"D:\網頁識別認證\json")
+    auction_capture_download_dir: Path = Path(r"D:\網頁識別認證\downloads")
+    auction_capture_ocr_url: str = "http://127.0.0.1:1224/api/ocr"
+    auction_capture_ocr_executable: Path = Path(
+        r"D:\Umi-OCR_Paddle_v2.1.5\Umi-OCR.exe"
+    )
+    auction_capture_ocr_startup_timeout_seconds: int = Field(default=45, ge=5, le=300)
 
     # Official MOI actual-price current-batch sync.  The Judicial Yuan
-    # endpoint is not configured here because its robots.txt disallows all
-    # crawling; the approved MOJ replacement requires CAPTCHA on every fresh
-    # query, so unattended auction crawling remains fail-closed.
+    # The MOJ auction capture runs separately through the configured local
+    # Playwright script; this remains the official open-data price source.
     market_sync_interval_hours: int = Field(default=24, ge=6, le=168)
     moi_cache_dir: str = "/var/cache/radar-scheduler"
 

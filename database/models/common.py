@@ -52,7 +52,8 @@ class NotificationLog(Base):
     """Shared notification *outbox* for both pipelines.
 
     Exactly one of ``property_id`` (sale) / ``auction_case_id`` (auction)
-    is expected to be set per row -- not enforced with a DB CHECK
+    is expected for per-item rows. Daily aggregate rows intentionally leave
+    both null and use ``kind="daily_summary"``. This is not enforced with a DB CHECK
     constraint in v1 (SQLite's ALTER TABLE support makes that annoying to
     retrofit; revisit once this table needs stricter guarantees), but
     every writer should treat it as an invariant.
@@ -90,7 +91,7 @@ class NotificationLog(Base):
     channel_id: Mapped[int | None] = mapped_column(BigInteger)
     kind: Mapped[str] = mapped_column(String(32))
     delivery_key: Mapped[str] = mapped_column(String(255))
-    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending | delivered | failed
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending | delivered | failed | suppressed | held
     attempt_count: Mapped[int] = mapped_column(default=0)
     last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

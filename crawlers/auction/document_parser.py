@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 
 from crawlers.auction.parser import ParsedAnnouncement
 
+MAX_DOCUMENT_TITLE_LENGTH = 255
+
 
 @dataclass(frozen=True)
 class DocumentRecord:
@@ -34,7 +36,13 @@ def extract_documents(parsed: ParsedAnnouncement, *, fetched_at: datetime | None
     """
     stamp = fetched_at or datetime.now(timezone.utc)
     return [
-        DocumentRecord(doc_type=link.doc_type, url=link.url, title=link.title, fetched_at=stamp, content_hash=parsed.source_hash)
+        DocumentRecord(
+            doc_type=link.doc_type,
+            url=link.url,
+            title=link.title[:MAX_DOCUMENT_TITLE_LENGTH],
+            fetched_at=stamp,
+            content_hash=parsed.source_hash,
+        )
         for link in parsed.document_links
     ]
 

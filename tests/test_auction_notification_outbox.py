@@ -67,11 +67,11 @@ def test_queue_pending_notifications_dedupes_across_repeat_calls(session_factory
         case = _seed_case(session)
         rescore = rescore_case(case, session)
 
-        first = queue_pending_notifications(session, case, None, rescore)
+        first = queue_pending_notifications(session, case, None, rescore, high_score_threshold=0)
         session.commit()
         assert first > 0
 
-        second = queue_pending_notifications(session, case, None, rescore)
+        second = queue_pending_notifications(session, case, None, rescore, high_score_threshold=0)
         session.commit()
         assert second == 0
 
@@ -82,40 +82,45 @@ def test_queue_pending_notifications_dedupes_across_repeat_calls(session_factory
 @pytest.mark.asyncio
 async def test_one_failing_channel_does_not_block_delivery_to_sibling_channels(session_factory) -> None:
     with session_factory() as session:
-        # round_number=2 routes to both "new" and "round".
+        # Force the remaining individual high-score destination.
         case = _seed_case(session, round_number=2)
         rescore = rescore_case(case, session)
-        queue_pending_notifications(session, case, None, rescore)
+        queue_pending_notifications(
+            session,
+            case,
+            None,
+            rescore,
+            high_score_threshold=0,
+            upcoming_within_days=365,
+        )
         session.commit()
 
-        new_channel = AsyncMock()
-        new_channel.send = AsyncMock(side_effect=RuntimeError("new channel unavailable"))
-        router = _router(new_channel=new_channel)
+        high_score_channel = AsyncMock()
+        high_score_channel.send = AsyncMock(side_effect=RuntimeError("high-score channel unavailable"))
+        router = _router(high_score_channel=high_score_channel)
 
         report = await deliver_pending_notifications(session, router)
 
         assert report.failed == 1
-        assert report.delivered == 1
+        assert report.delivered == 0
 
         rows = {row.kind: row for row in session.scalars(select(NotificationLog)).all()}
-        assert rows["new"].status == "failed"
-        assert "new channel unavailable" in rows["new"].last_error
-        assert rows["round"].status == "delivered"
-        assert rows["round"].delivered_at is not None
-        router.round_channel.send.assert_awaited_once()
+        assert rows["high_score"].status == "failed"
+        assert "high-score channel unavailable" in rows["high_score"].last_error
+        router.upcoming_channel.send.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_bounded_retry_stops_after_max_attempts_and_marks_row_failed(session_factory) -> None:
     with session_factory() as session:
-        case = _seed_case(session, round_number=1)  # routes to "new" only
+        case = _seed_case(session, round_number=2)
         rescore = rescore_case(case, session)
-        queue_pending_notifications(session, case, None, rescore)
+        queue_pending_notifications(session, case, None, rescore, high_score_threshold=0)
         session.commit()
 
         always_fails = AsyncMock()
         always_fails.send = AsyncMock(side_effect=RuntimeError("discord down"))
-        router = _router(new_channel=always_fails)
+        router = _router(high_score_channel=always_fails)
 
         max_attempts = 3
         last_report = None
@@ -168,22 +173,54 @@ async def test_delivery_recovers_a_row_left_pending_by_a_prior_crashed_process(s
 
 
 @pytest.mark.asyncio
+async def test_delivery_limit_leaves_remaining_rows_pending(session_factory) -> None:
+    with session_factory() as session:
+        case = _seed_case(session, round_number=2)
+        rescore = rescore_case(case, session)
+        queued = queue_pending_notifications(
+            session,
+            case,
+            None,
+            rescore,
+            high_score_threshold=0,
+            upcoming_within_days=365,
+        )
+        session.add(
+            NotificationLog(
+                auction_case_id=case.id,
+                kind="high_score",
+                delivery_key=f"auction:test-second-high-score:{case.id}",
+            )
+        )
+        session.commit()
+        assert queued == 1
+
+        router = _router()
+        report = await deliver_pending_notifications(session, router, limit=1)
+
+        assert report.attempted == 1
+        statuses = list(session.scalars(select(NotificationLog.status).order_by(NotificationLog.id)))
+        assert statuses.count("delivered") == 1
+        assert statuses.count("pending") == 1
+
+
+@pytest.mark.asyncio
 async def test_successfully_delivered_rows_are_never_resent(session_factory) -> None:
     with session_factory() as session:
-        case = _seed_case(session, round_number=1)
+        case = _seed_case(session, round_number=2)
         rescore = rescore_case(case, session)
-        queue_pending_notifications(session, case, None, rescore)
+        queue_pending_notifications(session, case, None, rescore, high_score_threshold=0)
         session.commit()
 
         router = _router()
         first_report = await deliver_pending_notifications(session, router)
         assert first_report.delivered == 1
-        router.new_channel.send.assert_awaited_once()
+        router.high_score_channel.send.assert_awaited_once()
 
         second_report = await deliver_pending_notifications(session, router)
         assert second_report.attempted == 0
         assert second_report.delivered == 0
-        router.new_channel.send.assert_awaited_once()  # still just the one call
+        router.high_score_channel.send.assert_awaited_once()  # still just the one call
 
 
 def test_max_notify_attempts_is_a_small_bounded_constant() -> None:

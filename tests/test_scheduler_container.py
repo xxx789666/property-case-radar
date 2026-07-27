@@ -18,10 +18,27 @@ def _service_block(text: str, service_name: str) -> str:
     return "\n".join(body)
 
 
-def test_production_scheduler_registers_only_official_market_job() -> None:
-    scheduler = build_production_scheduler(lambda: None, 24)
-    assert [job.id for job in scheduler.get_jobs()] == ["market-price-sync"]
+def test_production_scheduler_registers_official_market_and_optional_auction_jobs() -> None:
+    scheduler = build_production_scheduler(
+        lambda: None,
+        24,
+        auction_job=lambda: None,
+        auction_interval_hours=48,
+    )
+    assert {job.id for job in scheduler.get_jobs()} == {"market-price-sync", "auction-crawler"}
     assert scheduler.get_job("market-price-sync").max_instances == 1
+    assert scheduler.get_job("auction-crawler").trigger.interval.total_seconds() == 48 * 3600
+
+
+def test_production_sale_job_defaults_to_daily_interval() -> None:
+    scheduler = build_production_scheduler(
+        lambda: None,
+        24,
+        sale_job=lambda: None,
+    )
+    sale_job = scheduler.get_job("sale-crawler")
+    assert sale_job is not None
+    assert sale_job.trigger.interval.total_seconds() == 24 * 3600
 
 
 def test_scheduler_compose_service_is_separate_hardened_and_secret_scoped() -> None:

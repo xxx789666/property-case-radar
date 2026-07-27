@@ -1,14 +1,40 @@
 # openab — Property Case Radar Discord LLM bridge
 
-Adds a natural-language Q&A layer over Property Case Radar's data, backed by
+Provides the active natural-language Q&A entry point over Property Case
+Radar's data, backed by
 [OpenAB](https://github.com/openabdev/openab) 0.10.0-beta.2 (the `-codex`
 image variant) driving [Codex ACP](https://github.com/openai/codex) as the
-LLM. This is an **opt-in, additional** interaction surface -- it does not
-replace, modify, or share a process with the existing deterministic
-`/house` and `/auction` slash-command bot (`apps/discord_bot/main.py`'s
-`RadarBot`). Not started by `docker compose up -d postgres` (the documented
-default); only by `docker compose --profile openab up -d openab-gateway
-openab-sidecar` after the bootstrap steps below.
+LLM. The deployed Windows configuration replaces the deterministic
+`/house` and `/auction` Discord entry point: those commands are unregistered
+and `apps.discord_bot` is not scheduled. Mentioning `@Property Case Radar`
+in an allowlisted search channel creates a thread; follow-up messages in that
+thread do not require another mention.
+
+The current host uses the native Windows release because Docker is not
+installed. The hardened Docker Compose topology below remains the portable
+deployment alternative and the source of the gateway/sidecar separation
+design.
+
+## Native Windows deployment (current host)
+
+```powershell
+python scripts/bootstrap_openab_windows.py
+powershell -ExecutionPolicy Bypass -File scripts/install_openab_windows.ps1
+powershell -ExecutionPolicy Bypass -File scripts/register_openab_tasks.ps1
+```
+
+- OpenAB and npm runtime artifacts: `openab/.runtime/` (gitignored)
+- Secrets: `openab/.local/` (gitignored and restricted to the current user)
+- Gateway log: `logs/openab-gateway.log`
+- Sidecar log: `logs/openab-sidecar.log`
+- Per-query JSONL audit: `logs/openab-query.jsonl`
+- Windows tasks: `Property Case Radar OpenAB Gateway` and
+  `Property Case Radar OpenAB Sidecar` (at user logon, restart on failure)
+- Sidecar listener: loopback only, `127.0.0.1:18765`
+
+The native template is `openab/windows/config-radar-agent.toml`. The gateway
+holds the Discord token but never `DATABASE_URL`; the sidecar reads the
+dedicated `radar_agent_ro` URL and passes it only to each ACP child.
 
 The implementation was verified offline (see "Offline verification" below),
 including actually building both pinned images, running fully-hardened

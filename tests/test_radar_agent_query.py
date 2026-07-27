@@ -15,6 +15,7 @@ import sys
 import time
 import uuid
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,7 @@ from tools.radar_agent_query import (
     _build_parser,
     _clamp_limit,
     _create_read_only_engine,
+    _original_auction_pdf_files,
     _read_only_session,
     _require_database_url,
     _serialize_auction_case,
@@ -177,6 +179,50 @@ def test_serialize_auction_case_masks_debtor_and_owner(sample_case: AuctionCase)
     assert "occupancy_note" not in result
     assert result["round_number"] == 1
     assert result["floor_price_total_twd"] == 9_000_000
+
+
+def test_original_pdf_locator_uses_current_capture_hierarchy_and_excludes_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = AuctionCase(
+        court_name="法務部行政執行署",
+        case_number="1050100025324",
+        city="桃園市",
+        district="中壢區",
+    )
+    case_dir = tmp_path / "桃園市" / "中壢區" / case.case_number
+    case_dir.mkdir(parents=True)
+    (case_dir / "1050100025324_1_1.pdf").write_bytes(b"%PDF-original")
+    (case_dir / "案件詳細資料.pdf").write_bytes(b"%PDF-summary")
+    (case_dir / "1050100025324_notes.pdf").write_bytes(b"%PDF-not-official")
+    monkeypatch.setenv("RADAR_AUCTION_DOWNLOAD_DIR", str(tmp_path))
+
+    assert _original_auction_pdf_files(case) == ["1050100025324_1_1.pdf"]
+    assert _serialize_auction_case(case)["original_pdf_files"] == ["1050100025324_1_1.pdf"]
+
+
+def test_original_pdf_locator_supports_legacy_case_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = AuctionCase(
+        court_name="法務部行政執行署",
+        case_number="1050100025324",
+        city="桃園市",
+        district="中壢區",
+    )
+    legacy_dir = tmp_path / case.case_number
+    legacy_dir.mkdir()
+    (legacy_dir / "1050100025324_2_1.PDF").write_bytes(b"%PDF-original")
+    monkeypatch.setenv("RADAR_AUCTION_DOWNLOAD_DIR", str(tmp_path))
+
+    assert _original_auction_pdf_files(case) == ["1050100025324_2_1.PDF"]
+
+
+def test_original_pdf_locator_returns_empty_without_operator_root(
+    sample_case: AuctionCase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("RADAR_AUCTION_DOWNLOAD_DIR", raising=False)
+    assert _original_auction_pdf_files(sample_case) == []
 
 
 class TestDatabaseUrlFailsClosed:
@@ -679,6 +725,77 @@ class TestHandlersAgainstARealSession:
             args = parser.parse_args(["house-detail", "--id", "999999"])
             result = args.handler(session, args)
             assert isinstance(result, ToolError)
+
+    def test_house_search_filters_land_subtypes(self, session_factory) -> None:
+        with session_factory() as session:
+            common = {
+                "source": "591",
+                "url": "https://land.591.com.tw/sale/example",
+                "city": "桃園市",
+                "district": "中壢區",
+                "address": "測試段",
+                "total_price_twd": 20_000_000,
+                "unit_price_per_ping_twd": 100_000,
+                "building_area_ping": Decimal("200"),
+                "land_area_ping": Decimal("200"),
+                "building_type": "土地",
+                "status": "active",
+            }
+            session.add_all(
+                [
+                    Property(
+                        **common,
+                        source_property_id="land-farm",
+                        usage="農地",
+                    ),
+                    Property(
+                        **common,
+                        source_property_id="land-build",
+                        usage="住宅用地/建地",
+                    ),
+                    Property(
+                        source="591",
+                        source_property_id="house",
+                        url="https://sale.591.com.tw/house",
+                        city="桃園市",
+                        district="中壢區",
+                        total_price_twd=10_000_000,
+                        unit_price_per_ping_twd=300_000,
+                        building_area_ping=Decimal("30"),
+                        building_type="電梯大樓",
+                        status="active",
+                    ),
+                ]
+            )
+            session.commit()
+            parser = _build_parser()
+
+            land_args = parser.parse_args(
+                ["house-search", "--property-type", "land", "--limit", "50"]
+            )
+            land = land_args.handler(session, land_args)
+            assert {row["source_property_id"] for row in land} == {
+                "land-farm",
+                "land-build",
+            }
+
+            farm_args = parser.parse_args(
+                ["house-search", "--property-type", "farmland", "--limit", "50"]
+            )
+            farmland = farm_args.handler(session, farm_args)
+            assert [row["usage"] for row in farmland] == ["農地"]
+
+            build_args = parser.parse_args(
+                [
+                    "house-search",
+                    "--property-type",
+                    "building_land",
+                    "--limit",
+                    "50",
+                ]
+            )
+            building_land = build_args.handler(session, build_args)
+            assert [row["usage"] for row in building_land] == ["住宅用地/建地"]
 
     def test_auction_search_latest_schedule_detail(self, session_factory, sample_case: AuctionCase) -> None:
         with session_factory() as session:

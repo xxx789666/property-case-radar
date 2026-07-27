@@ -32,15 +32,26 @@ class SaleNotificationRouter:
         self.high_score_channel = high_score_channel
         self.high_score_threshold = high_score_threshold
 
-    async def publish(self, item: Property, *, created: bool, price_dropped: bool) -> list[str]:
+    async def publish(
+        self,
+        item: Property,
+        *,
+        created: bool,
+        price_dropped: bool,
+        send_new: bool = True,
+    ) -> list[str]:
         kinds: list[str] = []
-        if created:
+        if created and send_new:
             await self._send(self.new_channel, item, "new")
             kinds.append("new")
         if price_dropped:
             await self._send(self.price_drop_channel, item, "price_drop")
             kinds.append("price_drop")
-        if item.score is not None and item.score >= self.high_score_threshold:
+        if (
+            (created or price_dropped)
+            and item.score is not None
+            and item.score >= self.high_score_threshold
+        ):
             await self._send(self.high_score_channel, item, "high_score")
             kinds.append("high_score")
         return kinds

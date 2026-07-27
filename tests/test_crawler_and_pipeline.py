@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import func, select
 
 from apps.services.sale_pipeline import ingest_sale_listings
-from crawlers.sale import CompliancePolicy, FixtureSaleCrawler
+from crawlers.sale import CompliancePolicy, FixtureSaleCrawler, SaleCrawler, SaleListing
 from database.models.common import MarketPrice
 from database.models.sale import Property, PropertyPriceHistory
 
@@ -40,3 +40,46 @@ async def test_fixture_adapter_and_ingestion(session_factory) -> None:
 def test_compliance_policy_refuses_bypass() -> None:
     with pytest.raises(ValueError, match="prohibited"):
         CompliancePolicy(bypass_anti_bot=True)
+
+
+@pytest.mark.asyncio
+async def test_land_listing_is_not_scored_against_residential_market(
+    session_factory,
+) -> None:
+    class LandCrawler(SaleCrawler):
+        async def fetch(self):
+            return [
+                SaleListing(
+                    source="591",
+                    source_property_id="land-1",
+                    url="https://land.591.com.tw/sale/1",
+                    city="桃園市",
+                    district="中壢區",
+                    total_price_twd=20_000_000,
+                    unit_price_per_ping_twd=100_000,
+                    building_area_ping=Decimal("200"),
+                    land_area_ping=Decimal("200"),
+                    building_type="土地",
+                    usage="農地",
+                )
+            ]
+
+    with session_factory() as session:
+        session.add(
+            MarketPrice(
+                city="桃園市",
+                district="中壢區",
+                building_type="住宅",
+                average_unit_price_twd=394_000,
+                transaction_count=30,
+            )
+        )
+        session.commit()
+        await ingest_sale_listings(LandCrawler(), session)
+        item = session.scalar(select(Property))
+
+    assert item.building_type == "土地"
+    assert item.usage == "農地"
+    assert item.land_area_ping == Decimal("200")
+    assert item.market_unit_price_twd is None
+    assert item.score is None

@@ -152,8 +152,8 @@ class TestChannelRouting:
     def test_new_case_active_status_routes_normally(self, sample_case: AuctionCase) -> None:
         score = score_auction_case(sample_case, 358_000)
         targets = an.channels_for_new_case(sample_case, score)
-        assert "new" in targets
-        assert "round" in targets  # round_number == 2
+        assert "new" not in targets
+        assert "round" not in targets
 
     def test_status_event_suspended_goes_only_to_suspended_channel(self, sample_case: AuctionCase) -> None:
         event = apply_status_transition(sample_case, AuctionStatus.WITHDRAWN, changed_at=utc(2026, 8, 10))
@@ -165,10 +165,10 @@ class TestChannelRouting:
         )
         assert an.channels_for_status_event(sample_case, event) == []
 
-    def test_status_event_failed_routes_to_round_only_at_round_2_plus(self, sample_case: AuctionCase) -> None:
+    def test_status_event_failed_does_not_emit_individual_round_notice(self, sample_case: AuctionCase) -> None:
         # sample_case starts at round 2
         event = apply_status_transition(sample_case, AuctionStatus.FAILED, changed_at=utc(2026, 8, 10))
-        assert an.channels_for_status_event(sample_case, event) == ["round"]
+        assert an.channels_for_status_event(sample_case, event) == []
 
 
 @pytest.mark.asyncio
@@ -188,10 +188,10 @@ class TestAuctionNotificationRouter:
         outcomes = await router.publish_new_case(sample_case, 358_000, score)
         assert all(o.success for o in outcomes)
         kinds = {o.kind for o in outcomes}
-        assert "new" in kinds
-        assert "round" in kinds  # round_number == 2
-        router.new_channel.send.assert_awaited_once()
-        router.round_channel.send.assert_awaited_once()
+        assert "new" not in kinds
+        assert "round" not in kinds
+        router.new_channel.send.assert_not_called()
+        router.round_channel.send.assert_not_called()
 
     async def test_publish_new_case_skips_inactive_case(self, sample_case: AuctionCase) -> None:
         from unittest.mock import AsyncMock
@@ -213,26 +213,25 @@ class TestAuctionNotificationRouter:
         from unittest.mock import AsyncMock
 
         score = score_auction_case(sample_case, 358_000)
-        new_channel = AsyncMock()
-        new_channel.send = AsyncMock(side_effect=RuntimeError("channel unavailable"))
-        round_channel = AsyncMock()
+        high_score_channel = AsyncMock()
+        high_score_channel.send = AsyncMock(side_effect=RuntimeError("channel unavailable"))
         router = AuctionNotificationRouter(
-            new_channel=new_channel,
+            new_channel=AsyncMock(),
             upcoming_channel=AsyncMock(),
-            round_channel=round_channel,
-            high_score_channel=AsyncMock(),
+            round_channel=AsyncMock(),
+            high_score_channel=high_score_channel,
             suspended_channel=AsyncMock(),
-            high_score_threshold=80,
+            high_score_threshold=0,
+            upcoming_within_days=365,
         )
-        # sample_case is round 2 -> routes to both "new" (fails) and
-        # "round" (should still succeed despite "new" failing first).
+        # New, round, and upcoming channels are disabled for individual
+        # cases; the remaining high-score destination still never raises.
         outcomes = await router.publish_new_case(sample_case, 358_000, score)
         by_kind = {o.kind: o for o in outcomes}
-        assert by_kind["new"].success is False
-        assert "channel unavailable" in by_kind["new"].error
-        assert by_kind["round"].success is True
-        assert by_kind["round"].error is None
-        round_channel.send.assert_awaited_once()
+        assert by_kind["high_score"].success is False
+        assert "channel unavailable" in by_kind["high_score"].error
+        assert set(by_kind) == {"high_score"}
+        router.upcoming_channel.send.assert_not_called()
 
     async def test_send_new_case_and_send_status_event_never_raise(self, sample_case: AuctionCase) -> None:
         from unittest.mock import AsyncMock
@@ -283,7 +282,7 @@ class TestAuctionNotificationRouter:
         kinds = await router.publish_status_event(sample_case, event)
         assert kinds == []
 
-    async def test_publish_status_event_failed_at_round_2_routes_to_round_channel(self, sample_case: AuctionCase) -> None:
+    async def test_publish_status_event_failed_has_no_individual_round_message(self, sample_case: AuctionCase) -> None:
         from unittest.mock import AsyncMock
 
         event = apply_status_transition(sample_case, AuctionStatus.FAILED, changed_at=utc(2026, 8, 10))
@@ -295,9 +294,8 @@ class TestAuctionNotificationRouter:
             suspended_channel=AsyncMock(),
         )
         outcomes = await router.publish_status_event(sample_case, event)
-        assert [o.kind for o in outcomes] == ["round"]
-        assert outcomes[0].success
-        router.round_channel.send.assert_awaited_once()
+        assert outcomes == []
+        router.round_channel.send.assert_not_called()
 
     async def test_publish_status_event_failed_at_round_1_has_no_channel(self) -> None:
         from unittest.mock import AsyncMock
