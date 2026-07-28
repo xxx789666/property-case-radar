@@ -55,10 +55,18 @@ python -X utf8 -m tools.radar_agent_subscription <subcommand> [options]
 - 「1500 萬以內／以下／已內」正規化為
   `--max-total-price-twd 15000000`；萬元必須乘以 10,000 轉為新臺幣元。
 - 使用者指定「土地」時加入 `--property-type land`；「農地」使用
-  `--property-type farmland`；「建地」使用 `--property-type building_land`。
-  住宅用地、商業用地、工業用地、林地、山坡地與道路用地分別使用
-  `residential_land`、`commercial_land`、`industrial_land`、`forest_land`、
-  `hillside_land`、`road_land`。未指定物件類型時不得擅自加入此篩選。
+  `--property-type farmland`。「建地／建築用地」使用
+  `--property-type building_land`，其範圍包含一般建地、住宅用地、商業用地、
+  工業用地、住宅區、商業區、工業區、建築基地、特定目的事業用地及
+  甲／乙／丙／丁種建築用地（含甲建／乙建／丙建／丁建縮寫）。
+- 使用者明確指定住宅用地、商業用地、工業用地時，分別使用
+  `residential_land`、`commercial_land`、`industrial_land`。
+- 使用者明確指定「甲種建築用地／甲建」、「乙種建築用地／乙建」、
+  「丙種建築用地／丙建」、「丁種建築用地／丁建」時，分別使用
+  `type_a_building_land`、`type_b_building_land`、
+  `type_c_building_land`、`type_d_building_land`。
+- 林地、山坡地與道路用地分別使用 `forest_land`、`hillside_land`、
+  `road_land`。未指定物件類型時不得擅自加入此篩選。
 - 例如「幫我查詢桃園中壢區 1500 萬以內案件」只能執行一次：
 
 ```sh

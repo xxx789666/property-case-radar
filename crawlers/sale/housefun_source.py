@@ -43,11 +43,33 @@ def _number(text: str) -> Decimal:
 
 def _classify(title: str) -> tuple[str | None, str | None]:
     normalized = title.replace("工業地", "工業用地")
-    if any(marker in normalized for marker in ("農地", "建地", "工業用地", "土地", "林地")):
+    land_usage_markers = (
+        "甲種建築用地",
+        "乙種建築用地",
+        "丙種建築用地",
+        "丁種建築用地",
+        "住宅用地",
+        "商業用地",
+        "工業用地",
+        "住宅區",
+        "商業區",
+        "工業區",
+        "建築用地",
+        "建築基地",
+        "特定目的事業用地",
+        "甲建",
+        "乙建",
+        "丙建",
+        "丁建",
+        "農地",
+        "建地",
+        "林地",
+    )
+    if any(marker in normalized for marker in (*land_usage_markers, "土地")):
         usage = next(
             (
                 marker
-                for marker in ("農地", "建地", "工業用地", "林地")
+                for marker in land_usage_markers
                 if marker in normalized
             ),
             "其他",

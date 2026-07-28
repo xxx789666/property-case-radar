@@ -8,7 +8,10 @@ LLM. The deployed Windows configuration replaces the deterministic
 `/house` and `/auction` Discord entry point: those commands are unregistered
 and `apps.discord_bot` is not scheduled. Mentioning `@Property Case Radar`
 in an allowlisted search channel creates a thread; follow-up messages in that
-thread do not require another mention.
+thread do not require another mention. The Windows configuration accepts both
+the bot user mention (`1530136356439719997`) and the same-named Property Case
+Radar role mention (`1530137617952411779`) so either Discord autocomplete
+selection reaches the Agent.
 
 The current host uses the native Windows release because Docker is not
 installed. The hardened Docker Compose topology below remains the portable

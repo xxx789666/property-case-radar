@@ -14,6 +14,7 @@ def test_windows_config_uses_mention_to_thread_flow_and_local_bridge() -> None:
     discord = parsed["discord"]
     assert set(discord["allowed_channels"]) == {"1530076451242508318", "1530076529751756870"}
     assert discord["allowed_users"] == ["843428445802725388"]
+    assert discord["allowed_role_ids"] == ["1530137617952411779"]
     assert discord["allow_dm"] is False
     assert discord["allow_bot_messages"] == "off"
     assert discord["allow_user_messages"] == "involved"
@@ -37,6 +38,8 @@ def test_agent_contract_forbids_direct_database_and_intermediate_answers() -> No
     assert "Never read `.env`" in contract
     assert "Emit exactly one user-facing conclusion" in contract
     assert "Do not retry" in contract
+    assert "type_a_building_land" in contract
+    assert "type_d_building_land" in contract
 
 
 def test_agent_contract_uses_actual_case_type_official_url_and_original_pdf() -> None:

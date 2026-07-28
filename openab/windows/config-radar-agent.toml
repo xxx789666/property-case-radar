@@ -13,6 +13,12 @@ allowed_channels = [
 allowed_users = [
   "843428445802725388",
 ]
+# Discord exposes both a bot-user mention and a same-named bot-role
+# mention. Accept either so selecting @Property Case Radar cannot silently
+# miss the trigger before the query reaches the Agent.
+allowed_role_ids = [
+  "1530137617952411779",  # Property Case Radar role
+]
 allow_dm = false
 allow_bot_messages = "off"
 # Main channel requires @Property Case Radar. Once OpenAB creates a thread,

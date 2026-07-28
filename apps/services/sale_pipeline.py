@@ -22,7 +22,7 @@ MAX_STORABLE_DISCOUNT_RATE = Decimal("999.9999")
 def land_market_type(usage: str | None) -> str | None:
     text = (usage or "").strip()
     categories = set()
-    if any(marker in text for marker in ("工業", "丁種建築")):
+    if any(marker in text for marker in ("工業", "丁種建築", "丁建")):
         categories.add("土地:工業用地")
     if any(marker in text for marker in ("農地", "農牧", "農業", "田", "旱")):
         categories.add("土地:農地")
@@ -32,9 +32,14 @@ def land_market_type(usage: str | None) -> str | None:
             "建地",
             "住宅用地",
             "商業用地",
+            "住宅區",
+            "商業區",
             "甲種建築",
             "乙種建築",
             "丙種建築",
+            "甲建",
+            "乙建",
+            "丙建",
         )
     ):
         categories.add("土地:建地")

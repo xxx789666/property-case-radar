@@ -82,7 +82,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterator
 
-from sqlalchemy import Engine, create_engine, desc, event, select, text
+from sqlalchemy import Engine, create_engine, desc, event, or_, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, selectinload
 
@@ -98,6 +98,46 @@ AUCTION_DOWNLOAD_DIR_ENV_VAR = "RADAR_AUCTION_DOWNLOAD_DIR"
 _ALLOWED_URL_PREFIXES = ("postgresql+psycopg://", "sqlite+pysqlite://")
 
 _EAGER_LOAD = (selectinload(AuctionCase.rounds),)
+
+BUILDING_LAND_USAGE_MARKERS = (
+    "建地",
+    "建築用地",
+    "建築基地",
+    "住宅用地",
+    "商業用地",
+    "工業用地",
+    "工業地",
+    "住宅區",
+    "商業區",
+    "工業區",
+    "甲建",
+    "乙建",
+    "丙建",
+    "丁建",
+    "特定目的事業用地",
+)
+
+LAND_PROPERTY_TYPE_USAGE_MARKERS = {
+    "farmland": ("農地",),
+    "building_land": BUILDING_LAND_USAGE_MARKERS,
+    "residential_land": ("住宅用地", "住宅區"),
+    "commercial_land": ("商業用地", "商業區"),
+    "industrial_land": (
+        "工業用地",
+        "工業地",
+        "工業區",
+        "丁種建築用地",
+        "丁種建築",
+        "丁建",
+    ),
+    "type_a_building_land": ("甲種建築用地", "甲種建築", "甲建"),
+    "type_b_building_land": ("乙種建築用地", "乙種建築", "乙建"),
+    "type_c_building_land": ("丙種建築用地", "丙種建築", "丙建"),
+    "type_d_building_land": ("丁種建築用地", "丁種建築", "丁建"),
+    "forest_land": ("林地",),
+    "hillside_land": ("山坡地",),
+    "road_land": ("道路用地",),
+}
 
 
 def _original_auction_pdf_files(case: AuctionCase) -> list[str]:
@@ -521,22 +561,12 @@ def _house_search(session: Session, args: argparse.Namespace) -> Any:
         stmt = stmt.where(Property.building_type != "土地")
     elif property_type == "land":
         stmt = stmt.where(Property.building_type == "土地")
-    elif property_type == "farmland":
-        stmt = stmt.where(Property.building_type == "土地", Property.usage.contains("農地"))
-    elif property_type == "building_land":
-        stmt = stmt.where(Property.building_type == "土地", Property.usage.contains("建地"))
-    elif property_type == "residential_land":
-        stmt = stmt.where(Property.building_type == "土地", Property.usage.contains("住宅用地"))
-    elif property_type == "commercial_land":
-        stmt = stmt.where(Property.building_type == "土地", Property.usage.contains("商業用地"))
-    elif property_type == "industrial_land":
-        stmt = stmt.where(Property.building_type == "土地", Property.usage.contains("工業用地"))
-    elif property_type == "forest_land":
-        stmt = stmt.where(Property.building_type == "土地", Property.usage.contains("林地"))
-    elif property_type == "hillside_land":
-        stmt = stmt.where(Property.building_type == "土地", Property.usage.contains("山坡地"))
-    elif property_type == "road_land":
-        stmt = stmt.where(Property.building_type == "土地", Property.usage.contains("道路用地"))
+    elif property_type in LAND_PROPERTY_TYPE_USAGE_MARKERS:
+        markers = LAND_PROPERTY_TYPE_USAGE_MARKERS[property_type]
+        stmt = stmt.where(
+            Property.building_type == "土地",
+            or_(*(Property.usage.contains(marker) for marker in markers)),
+        )
     stmt = stmt.order_by(
         desc(Property.score).nullslast(),
         desc(Property.first_seen_at),
@@ -652,6 +682,10 @@ def _build_parser() -> argparse.ArgumentParser:
             "residential_land",
             "commercial_land",
             "industrial_land",
+            "type_a_building_land",
+            "type_b_building_land",
+            "type_c_building_land",
+            "type_d_building_land",
             "forest_land",
             "hillside_land",
             "road_land",

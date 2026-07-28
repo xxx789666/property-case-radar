@@ -754,6 +754,31 @@ class TestHandlersAgainstARealSession:
                         usage="住宅用地/建地",
                     ),
                     Property(
+                        **common,
+                        source_property_id="land-type-a",
+                        usage="甲種建築用地",
+                    ),
+                    Property(
+                        **common,
+                        source_property_id="land-type-b",
+                        usage="乙種建築用地",
+                    ),
+                    Property(
+                        **common,
+                        source_property_id="land-type-c",
+                        usage="丙種建築用地",
+                    ),
+                    Property(
+                        **common,
+                        source_property_id="land-type-d",
+                        usage="丁種建築用地",
+                    ),
+                    Property(
+                        **common,
+                        source_property_id="land-commercial",
+                        usage="商業區",
+                    ),
+                    Property(
                         source="591",
                         source_property_id="house",
                         url="https://sale.591.com.tw/house",
@@ -777,6 +802,11 @@ class TestHandlersAgainstARealSession:
             assert {row["source_property_id"] for row in land} == {
                 "land-farm",
                 "land-build",
+                "land-type-a",
+                "land-type-b",
+                "land-type-c",
+                "land-type-d",
+                "land-commercial",
             }
 
             farm_args = parser.parse_args(
@@ -795,7 +825,32 @@ class TestHandlersAgainstARealSession:
                 ]
             )
             building_land = build_args.handler(session, build_args)
-            assert [row["usage"] for row in building_land] == ["住宅用地/建地"]
+            assert {row["usage"] for row in building_land} == {
+                "住宅用地/建地",
+                "甲種建築用地",
+                "乙種建築用地",
+                "丙種建築用地",
+                "丁種建築用地",
+                "商業區",
+            }
+
+            for property_type, usage in (
+                ("type_a_building_land", "甲種建築用地"),
+                ("type_b_building_land", "乙種建築用地"),
+                ("type_c_building_land", "丙種建築用地"),
+                ("type_d_building_land", "丁種建築用地"),
+            ):
+                subtype_args = parser.parse_args(
+                    [
+                        "house-search",
+                        "--property-type",
+                        property_type,
+                        "--limit",
+                        "50",
+                    ]
+                )
+                subtype = subtype_args.handler(session, subtype_args)
+                assert [row["usage"] for row in subtype] == [usage]
 
     def test_auction_search_latest_schedule_detail(self, session_factory, sample_case: AuctionCase) -> None:
         with session_factory() as session:

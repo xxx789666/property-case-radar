@@ -78,3 +78,20 @@ def test_auction_subscription_serializes_conditions() -> None:
     assert created.subscription["case_type"] == "land"
     assert created.subscription["min_round"] == 3
     assert created.subscription["require_deliverable"] is True
+
+
+def test_house_subscription_accepts_type_a_building_land() -> None:
+    broker = _broker()
+    try:
+        created = broker.execute(
+            {
+                "operation": "house-create",
+                "city": "桃園市",
+                "district": "楊梅區",
+                "property_type": "type_a_building_land",
+            }
+        )
+    finally:
+        broker.engine.dispose()
+
+    assert created.subscription["property_type"] == "type_a_building_land"

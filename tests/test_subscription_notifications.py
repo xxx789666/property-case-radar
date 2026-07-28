@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import select
 
 from apps.services.subscription_notifications import (
+    _sale_type_matches,
     deliver_pending_subscription_notifications,
     queue_sale_subscription_matches,
 )
@@ -17,6 +18,28 @@ class RecordingChannel:
 
     async def send(self, *, embed, content=None):
         self.messages.append((content, embed))
+
+
+@pytest.mark.parametrize(
+    ("property_type", "usage"),
+    [
+        ("building_land", "住宅用地"),
+        ("building_land", "商業區"),
+        ("building_land", "甲種建築用地"),
+        ("building_land", "乙種建築用地"),
+        ("building_land", "丙種建築用地"),
+        ("building_land", "丁種建築用地"),
+        ("type_a_building_land", "甲種建築用地"),
+        ("type_b_building_land", "乙種建築用地"),
+        ("type_c_building_land", "丙種建築用地"),
+        ("type_d_building_land", "丁種建築用地"),
+        ("industrial_land", "工業區"),
+        ("industrial_land", "丁種建築用地"),
+    ],
+)
+def test_sale_land_type_aliases_match(property_type: str, usage: str) -> None:
+    item = Property(building_type="土地", usage=usage)
+    assert _sale_type_matches(item, property_type) is True
 
 
 @pytest.mark.asyncio
