@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     sale_capture_script: Path = Path(r"D:\網頁識別認證\capture_sale_results.py")
     sale_capture_output_dir: Path = Path(r"D:\網頁識別認證\sale_json")
     sale_capture_max_pages: int = Field(default=3, ge=1, le=20)
+    housefun_capture_enabled: bool = True
+    housefun_capture_max_pages: int = Field(default=3, ge=1, le=3)
+    housefun_status_verify_limit: int = Field(default=50, ge=1, le=200)
     sale_status_missing_days: int = Field(default=3, ge=1, le=30)
     sale_status_verify_limit: int = Field(default=500, ge=1, le=2000)
     crawler_min_delay_seconds: float = Field(default=2, ge=0)

@@ -656,6 +656,12 @@ async def ingest_auction_announcements(
                 session, outcome.case, outcome.case.status_history[-1], rescore
             )
 
+    # SQLite drops tzinfo when a flushed history row is reloaded while later
+    # announcements in the same batch remain UTC-aware. Keep the in-memory
+    # graph consistent for callers; PostgreSQL values are already aware.
+    for instance in session.identity_map.values():
+        if isinstance(instance, AuctionStatusHistory):
+            instance.changed_at = _as_aware_utc(instance.changed_at)
     session.commit()
 
     return IngestResult(

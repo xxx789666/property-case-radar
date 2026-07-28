@@ -36,6 +36,7 @@ async def reconcile_stale_sale_listings(
     missing_days: int = 3,
     limit: int = 500,
     now: datetime | None = None,
+    source: str = "591",
 ) -> SaleStatusResult:
     checked_at = now or utcnow()
     cutoff = checked_at - timedelta(days=missing_days)
@@ -43,7 +44,7 @@ async def reconcile_stale_sale_listings(
         session.scalars(
             select(Property)
             .where(
-                Property.source == "591",
+                Property.source == source,
                 Property.status == "active",
                 Property.last_seen_at < cutoff,
             )

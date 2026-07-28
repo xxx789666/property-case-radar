@@ -32,6 +32,8 @@ from crawlers.sale.captured_status import (
     CapturedSaleStatusVerifier,
     SaleStatusVerificationError,
 )
+from crawlers.sale.composite import CompositeSaleCrawler
+from crawlers.sale.housefun_source import HousefunSaleCrawler, HousefunStatusVerifier
 from database.models.sale import Property
 from database.session import create_db_engine, create_session_factory
 from notifications.auction_notification import AuctionNotificationRouter
@@ -156,9 +158,10 @@ def build_production_scheduler(
 
 def make_live_sale_job(
     factory: sessionmaker[Session],
-    crawler: CapturedSaleCrawler,
+    crawler,
     settings: Settings,
     status_verifier: CapturedSaleStatusVerifier | None = None,
+    additional_status_verifiers: tuple[tuple[str, object, int], ...] = (),
 ) -> Callable[[], None]:
     async def run_sale_cycle() -> None:
         with factory() as session:
@@ -203,6 +206,35 @@ def make_live_sale_job(
                     # listing into an inactive one or suppress the daily
                     # count summary.
                     logger.exception("sale status reconciliation failed safely")
+            for source_name, verifier, verify_limit in additional_status_verifiers:
+                try:
+                    extra_status_result = await reconcile_stale_sale_listings(
+                        session,
+                        verifier,
+                        missing_days=settings.sale_status_missing_days,
+                        limit=verify_limit,
+                        source=source_name,
+                    )
+                    logger.info(
+                        "%s sale status reconciliation finished: %s",
+                        source_name,
+                        extra_status_result,
+                    )
+                except Exception:
+                    logger.exception(
+                        "%s sale status reconciliation failed safely",
+                        source_name,
+                    )
+            failures = getattr(crawler, "last_failures", {})
+            for source_name in getattr(crawler, "sources", {}):
+                error = failures.get(source_name)
+                update_system_alert(
+                    settings,
+                    key=f"sale-source:{source_name}",
+                    failing=error is not None,
+                    title=f"售屋來源 {source_name}",
+                    detail=error or "抓取正常",
+                )
             logger.info(
                 "sale crawl finished: %s baseline=%s",
                 result,
@@ -479,15 +511,31 @@ def main() -> None:
     market_source = MoiActualPriceSource(cache_dir=settings.moi_cache_dir)
     sale_job: Callable[[], None] | None = None
     if settings.sale_capture_enabled:
-        sale_job = make_live_sale_job(
-            factory,
-            CapturedSaleCrawler(
+        sale_sources = {
+            "591": CapturedSaleCrawler(
                 settings.sale_capture_script,
                 output_dir=settings.sale_capture_output_dir,
                 max_pages=settings.sale_capture_max_pages,
-            ),
+            )
+        }
+        additional_status_verifiers = ()
+        if settings.housefun_capture_enabled:
+            sale_sources["housefun"] = HousefunSaleCrawler(
+                max_pages=settings.housefun_capture_max_pages
+            )
+            additional_status_verifiers = (
+                (
+                    "housefun",
+                    HousefunStatusVerifier(),
+                    settings.housefun_status_verify_limit,
+                ),
+            )
+        sale_job = make_live_sale_job(
+            factory,
+            CompositeSaleCrawler(sale_sources),
             settings,
             CapturedSaleStatusVerifier(settings.sale_capture_script),
+            additional_status_verifiers,
         )
     auction_job: Callable[[], None] | None = None
     if settings.auction_capture_enabled:
