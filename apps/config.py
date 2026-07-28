@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     auction_failed_retry_delay_minutes: int = Field(default=15, ge=1, le=120)
     auction_failed_retry_rounds: int = Field(default=3, ge=0, le=10)
 
+    database_backup_dir: Path = Path(
+        r"D:\網頁識別認證\backups\postgres"
+    )
+    database_backup_retention_days: int = Field(default=14, ge=1, le=365)
+
     # Official MOI actual-price current-batch sync.  The Judicial Yuan
     # The MOJ auction capture runs separately through the configured local
     # Playwright script; this remains the official open-data price source.
