@@ -9,7 +9,7 @@ $action = New-ScheduledTaskAction -Execute $powerShell -Argument (
     '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $scriptPath
 )
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
-    -RepetitionInterval (New-TimeSpan -Minutes 5) `
+    -RepetitionInterval (New-TimeSpan -Hours 6) `
     -RepetitionDuration (New-TimeSpan -Days 3650)
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
