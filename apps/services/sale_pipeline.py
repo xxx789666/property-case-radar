@@ -11,6 +11,10 @@ from database.repositories.sale import PropertyRepository
 from scoring.sale_score import SaleScoreInput, score_sale
 from scoring.land_score import LandScoreInput, score_land
 from notifications.sale_notification import SaleNotificationRouter
+from apps.services.subscription_notifications import (
+    deliver_pending_subscription_notifications,
+    queue_sale_subscription_matches,
+)
 
 MAX_STORABLE_DISCOUNT_RATE = Decimal("999.9999")
 
@@ -180,6 +184,8 @@ async def ingest_sale_listings(
         created_count += int(created)
         price_drops += int(dropped)
         notification_events.append((item, created, dropped))
+        if created:
+            queue_sale_subscription_matches(session, item)
     session.commit()
     if notifier is not None:
         for item, created, dropped in notification_events:
@@ -189,4 +195,7 @@ async def ingest_sale_listings(
                 price_dropped=dropped,
                 send_new=notify_new,
             )
+        await deliver_pending_subscription_notifications(
+            session, notifier.subscription_channel
+        )
     return IngestResult(processed=len(listings), created=created_count, price_drops=price_drops)

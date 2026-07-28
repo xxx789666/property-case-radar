@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Protocol
+from typing import Callable, Protocol
 
 import discord
 
@@ -248,7 +248,9 @@ def channels_for_status_event(
 
 
 class MessageChannel(Protocol):
-    async def send(self, *, embed: discord.Embed) -> object: ...
+    async def send(
+        self, *, embed: discord.Embed, content: str | None = None
+    ) -> object: ...
 
     async def edit(self, *, message_id: int, embed: discord.Embed) -> object: ...
 
@@ -299,6 +301,7 @@ class AuctionNotificationRouter:
         suspended_channel: MessageChannel,
         high_score_threshold: int = 80,
         upcoming_within_days: int = 7,
+        channel_factory: Callable[[int], MessageChannel] | None = None,
     ) -> None:
         self.new_channel = new_channel
         self.upcoming_channel = upcoming_channel
@@ -307,6 +310,12 @@ class AuctionNotificationRouter:
         self.suspended_channel = suspended_channel
         self.high_score_threshold = high_score_threshold
         self.upcoming_within_days = upcoming_within_days
+        self.channel_factory = channel_factory
+
+    def subscription_channel(self, channel_id: int) -> MessageChannel:
+        if self.channel_factory is None:
+            raise RuntimeError("subscription channel routing is not configured")
+        return self.channel_factory(channel_id)
 
     async def send_new_case(
         self, kind: str, case: AuctionCase, market_unit_price_twd: int, score: AuctionScore

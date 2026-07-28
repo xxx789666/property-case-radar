@@ -167,6 +167,7 @@ async def deliver_pending_notifications(
     statement = (
         select(NotificationLog)
         .where(NotificationLog.status.in_(("pending", "failed")))
+        .where(~NotificationLog.kind.like("subscription:%"))
         .where(NotificationLog.attempt_count < max_attempts)
         .where(NotificationLog.auction_case_id.is_not(None))
         .order_by(NotificationLog.id)

@@ -19,6 +19,9 @@ from apps.services.sale_pipeline import ingest_sale_listings, rescore_sale_inven
 from apps.services.sale_daily_summary import deliver_daily_sale_summary
 from apps.services.sale_status_lifecycle import reconcile_stale_sale_listings
 from apps.services.system_alerts import update_system_alert
+from apps.services.subscription_notifications import (
+    deliver_pending_subscription_notifications,
+)
 from crawlers.auction.court_crawler import AuctionAnnouncementSource, RawAnnouncement
 from crawlers.auction.captured_source import CapturedAuctionAnnouncementSource
 from crawlers.auction.moj_detail_parser import MojEstateDetailParser
@@ -341,6 +344,13 @@ def make_live_auction_job(
                     )
                     report = await deliver_pending_notifications(session, notifier, liquidity_index=liquidity_index)
                     logger.info("auction notification delivery finished: %s", report)
+                    subscription_report = await deliver_pending_subscription_notifications(
+                        session, notifier.subscription_channel
+                    )
+                    logger.info(
+                        "auction subscription delivery finished: %s",
+                        subscription_report,
+                    )
 
             retry_method = getattr(source, "retry_failed_counties", None)
             if not failed_regions or not callable(retry_method):
@@ -432,6 +442,9 @@ def make_live_auction_job(
                     logger.info(
                         "auction retry notification delivery finished: %s",
                         delivery_report,
+                    )
+                    await deliver_pending_subscription_notifications(
+                        session, retry_notifier.subscription_channel
                     )
             update_system_alert(
                 settings,

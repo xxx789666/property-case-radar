@@ -54,9 +54,13 @@ class DiscordRestChannelSender:
         self._client = client
         self._channel_id = channel_id
 
-    async def send(self, *, embed: discord.Embed) -> object:
+    async def send(
+        self, *, embed: discord.Embed, content: str | None = None
+    ) -> object:
         channel = await self._client.fetch_channel(self._channel_id)
-        return await channel.send(embed=embed)
+        if content is None:
+            return await channel.send(embed=embed)
+        return await channel.send(content=content, embed=embed)
 
     async def edit(self, *, message_id: int, embed: discord.Embed) -> object:
         channel = await self._client.fetch_channel(self._channel_id)
@@ -124,6 +128,9 @@ async def live_auction_notifier(settings: Settings) -> AsyncIterator[AuctionNoti
             suspended_channel=DiscordRestChannelSender(client, settings.discord_auction_suspended_channel_id),
             high_score_threshold=settings.auction_high_score_threshold,
             upcoming_within_days=settings.auction_upcoming_within_days,
+            channel_factory=lambda channel_id: DiscordRestChannelSender(
+                client, channel_id
+            ),
         )
     finally:
         await client.close()

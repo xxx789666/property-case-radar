@@ -45,6 +45,7 @@ from database.models.auction import (
     RoundResult,
 )
 from apps.services.auction_notification_outbox import queue_pending_notifications
+from apps.services.subscription_notifications import queue_auction_subscription_matches
 from database.models.common import MarketPrice
 from database.repositories.auction import AuctionRepository
 from scoring.auction_score import AuctionScore, risk_score_0_100, score_auction_case
@@ -647,6 +648,9 @@ async def ingest_auction_announcements(
         status_changed += int(outcome.status_changed)
         if outcome.created:
             notifications_queued += queue_pending_notifications(session, outcome.case, None, rescore)
+            notifications_queued += queue_auction_subscription_matches(
+                session, outcome.case
+            )
         elif outcome.status_changed:
             notifications_queued += queue_pending_notifications(
                 session, outcome.case, outcome.case.status_history[-1], rescore

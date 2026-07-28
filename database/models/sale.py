@@ -62,4 +62,6 @@ class PropertySubscription(Base, TimestampMixin):
     min_building_area_ping: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     max_age_years: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
     min_discount_rate: Mapped[Decimal | None] = mapped_column(Numeric(7, 4))
+    property_type: Mapped[str | None] = mapped_column(String(32))
+    channel_id: Mapped[int | None] = mapped_column(BigInteger)
     active: Mapped[bool] = mapped_column(Boolean, default=True)

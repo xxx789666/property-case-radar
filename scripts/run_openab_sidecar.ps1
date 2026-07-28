@@ -7,6 +7,10 @@ $nodeExe = (Get-Command node -ErrorAction Stop).Source
 $pythonExe = "C:\Users\xx\AppData\Local\Programs\Python\Python313\python.exe"
 $agentEntry = Join-Path $runtimeDir "npm\node_modules\@agentclientprotocol\codex-acp\dist\index.js"
 $bridgeServer = Join-Path $repoRoot "openab\sidecar\bridge-server.mjs"
+$subscriptionBroker = Join-Path $repoRoot "scripts\subscription_broker.py"
+$subscriptionBrokerLog = Join-Path $logDir "subscription-broker.log"
+$subscriptionBrokerErrorLog = Join-Path $logDir "subscription-broker.stderr.log"
+$subscriptionBrokerToken = Join-Path $repoRoot "openab\.local\subscription_broker_token"
 $dbSecret = Join-Path $repoRoot "openab\.local\radar_agent_database_url"
 $queryLog = Join-Path $logDir "openab-query.jsonl"
 $componentLog = Join-Path $logDir "openab-sidecar.log"
@@ -27,6 +31,7 @@ New-Item -ItemType Directory -Force $logDir | Out-Null
 if (-not (Test-Path -LiteralPath $agentEntry)) { throw "codex-acp is not installed: $agentEntry" }
 if (-not (Test-Path -LiteralPath $pythonExe)) { throw "Radar Python is not installed: $pythonExe" }
 if (-not (Test-Path -LiteralPath $dbSecret)) { throw "Read-only database secret is missing: $dbSecret" }
+if (-not (Test-Path -LiteralPath $subscriptionBroker)) { throw "Subscription broker is missing: $subscriptionBroker" }
 if (-not $downloadRoot) { throw "AUCTION_CAPTURE_DOWNLOAD_DIR is not configured" }
 Set-Location -LiteralPath $repoRoot
 
@@ -39,6 +44,8 @@ $env:RADAR_AGENT_DATABASE_URL_SECRET_FILE = $dbSecret
 $env:RADAR_AGENT_QUERY_LOG = $queryLog
 $env:RADAR_AUCTION_DOWNLOAD_DIR = $downloadRoot
 $env:RADAR_PDF_UPLOAD_BROKER_URL = "http://127.0.0.1:18766"
+$env:RADAR_SUBSCRIPTION_BROKER_URL = "http://127.0.0.1:18767"
+$env:RADAR_SUBSCRIPTION_BROKER_TOKEN_FILE = $subscriptionBrokerToken
 $env:PYTHONPATH = $repoRoot
 $env:PYTHONUTF8 = "1"
 # Scheduled Tasks do not reliably inherit the interactive user's PATH.
@@ -47,11 +54,40 @@ $env:PYTHONUTF8 = "1"
 $env:PATH = "$(Split-Path -Parent $pythonExe);$env:PATH"
 
 "$(Get-Date -Format o) sidecar wrapper starting" | Add-Content -LiteralPath $componentLog -Encoding utf8
+$subscriptionBrokerProcess = Start-Process -FilePath $pythonExe `
+    -ArgumentList @("-X", "utf8", $subscriptionBroker) `
+    -WindowStyle Hidden `
+    -RedirectStandardOutput $subscriptionBrokerLog `
+    -RedirectStandardError $subscriptionBrokerErrorLog `
+    -PassThru
+$brokerReady = $false
+for ($attempt = 0; $attempt -lt 20; $attempt++) {
+    if ($subscriptionBrokerProcess.HasExited) {
+        throw "Subscription broker exited during startup with code $($subscriptionBrokerProcess.ExitCode)"
+    }
+    try {
+        $health = Invoke-RestMethod -Uri "http://127.0.0.1:18767/health" -TimeoutSec 1
+        if ($health.ok -eq $true) {
+            $brokerReady = $true
+            break
+        }
+    } catch {
+        Start-Sleep -Milliseconds 250
+    }
+}
+if (-not $brokerReady) { throw "Subscription broker did not become ready on port 18767" }
 # bridge-server deliberately writes structured operational events to
 # stderr. Windows PowerShell 5 wraps redirected native stderr as
 # ErrorRecord objects; keep those records in the log instead of treating a
 # normal "listening" event as a terminating PowerShell error.
 $ErrorActionPreference = "Continue"
-& $nodeExe $bridgeServer 2>&1 |
-    ForEach-Object { "$(Get-Date -Format o) $_" | Add-Content -LiteralPath $componentLog -Encoding utf8 }
-exit $LASTEXITCODE
+try {
+    & $nodeExe $bridgeServer 2>&1 |
+        ForEach-Object { "$(Get-Date -Format o) $_" | Add-Content -LiteralPath $componentLog -Encoding utf8 }
+    $bridgeExitCode = $LASTEXITCODE
+} finally {
+    if ($null -ne $subscriptionBrokerProcess -and -not $subscriptionBrokerProcess.HasExited) {
+        Stop-Process -Id $subscriptionBrokerProcess.Id -Force -ErrorAction SilentlyContinue
+    }
+}
+exit $bridgeExitCode

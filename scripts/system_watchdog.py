@@ -115,6 +115,12 @@ def run_watchdog() -> int:
                 "http://127.0.0.1:18766/health",
             ),
             (
+                "watchdog:subscription-broker",
+                "自然語言訂閱 Broker",
+                http_service_ready("http://127.0.0.1:18767/health"),
+                "http://127.0.0.1:18767/health",
+            ),
+            (
                 "watchdog:umi-ocr",
                 "Umi-OCR API",
                 http_service_ready(settings.auction_capture_ocr_url),

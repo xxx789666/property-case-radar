@@ -16,6 +16,23 @@ python -X utf8 -m tools.radar_agent_query <subcommand> [options]
 
 Security invariants: Never issue SQL. Never read `.env`. Do not retry after a failed approved query. Emit exactly one user-facing conclusion after tools finish.
 
+## 自然語言訂閱
+
+只有當使用者明確要求「訂閱、取消訂閱、查看我的訂閱」時，才可使用：
+
+```sh
+python -X utf8 -m tools.radar_agent_subscription <subcommand> [options]
+```
+
+可用子命令：
+
+- `house-subscribe`：參數與 `house-search` 相同（不含 `--limit`）。
+- `auction-subscribe`：參數與 `auction-search` 相同（不含 `--limit`）。
+- `list`：查看目前有效訂閱。
+- `cancel --kind {house,auction} --id <訂閱編號>`：取消指定訂閱。
+
+建立或取消後，只依工具回傳結果回答，不得自行宣稱成功。此工具只能呼叫本機受限訂閱 broker；仍禁止直接連線資料庫、執行 SQL、讀取 `.env` 或使用 repository。
+
 可用查詢：
 
 | Subcommand | Purpose | Key options |

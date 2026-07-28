@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Protocol
+from typing import Callable, Protocol
 
 import discord
 from database.models.sale import Property
@@ -15,7 +15,9 @@ class SaleNotification:
 
 
 class MessageChannel(Protocol):
-    async def send(self, *, embed: discord.Embed) -> object: ...
+    async def send(
+        self, *, embed: discord.Embed, content: str | None = None
+    ) -> object: ...
 
 
 class SaleNotificationRouter:
@@ -26,11 +28,18 @@ class SaleNotificationRouter:
         price_drop_channel: MessageChannel,
         high_score_channel: MessageChannel,
         high_score_threshold: int = 80,
+        channel_factory: Callable[[int], MessageChannel] | None = None,
     ):
         self.new_channel = new_channel
         self.price_drop_channel = price_drop_channel
         self.high_score_channel = high_score_channel
         self.high_score_threshold = high_score_threshold
+        self.channel_factory = channel_factory
+
+    def subscription_channel(self, channel_id: int) -> MessageChannel:
+        if self.channel_factory is None:
+            raise RuntimeError("subscription channel routing is not configured")
+        return self.channel_factory(channel_id)
 
     async def publish(
         self,

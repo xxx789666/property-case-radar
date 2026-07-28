@@ -43,6 +43,9 @@ async def live_sale_notifier(
                 client, settings.discord_sale_high_score_channel_id
             ),
             high_score_threshold=settings.sale_high_score_threshold,
+            channel_factory=lambda channel_id: DiscordRestChannelSender(
+                client, channel_id
+            ),
         )
     finally:
         await client.close()
