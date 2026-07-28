@@ -3,6 +3,7 @@ import logging
 from collections.abc import Callable
 
 from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 from sqlalchemy.orm import Session, sessionmaker
 
 from apps.config import Settings, get_settings
@@ -17,6 +18,7 @@ from apps.services.sale_notifier import live_sale_notifier
 from apps.services.sale_pipeline import ingest_sale_listings, rescore_sale_inventory
 from apps.services.sale_daily_summary import deliver_daily_sale_summary
 from apps.services.sale_status_lifecycle import reconcile_stale_sale_listings
+from apps.services.system_alerts import update_system_alert
 from crawlers.auction.court_crawler import AuctionAnnouncementSource, RawAnnouncement
 from crawlers.auction.captured_source import CapturedAuctionAnnouncementSource
 from crawlers.auction.moj_detail_parser import MojEstateDetailParser
@@ -33,6 +35,25 @@ from notifications.auction_notification import AuctionNotificationRouter
 from sqlalchemy import func, select
 
 logger = logging.getLogger(__name__)
+
+
+def attach_failure_alerts(scheduler: BlockingScheduler, settings: Settings) -> None:
+    def report_job_result(event) -> None:
+        failed = event.exception is not None
+        detail = (
+            str(event.exception)[:1500]
+            if failed
+            else f"{event.job_id} 已正常完成"
+        )
+        update_system_alert(
+            settings,
+            key=f"scheduler-job:{event.job_id}",
+            failing=failed,
+            title=f"排程工作 {event.job_id}",
+            detail=detail,
+        )
+
+    scheduler.add_listener(report_job_result, EVENT_JOB_ERROR | EVENT_JOB_EXECUTED)
 
 
 class _RawAnnouncementBatchSource(AuctionAnnouncementSource):
@@ -323,6 +344,17 @@ def make_live_auction_job(
 
             retry_method = getattr(source, "retry_failed_counties", None)
             if not failed_regions or not callable(retry_method):
+                update_system_alert(
+                    settings,
+                    key="auction-failed-counties",
+                    failing=bool(failed_regions),
+                    title="法拍縣市抓取",
+                    detail=(
+                        f"仍失敗：{', '.join(failed_regions)}"
+                        if failed_regions
+                        else "22 縣市皆完成"
+                    ),
+                )
                 return
 
             summary_reports = (
@@ -401,6 +433,17 @@ def make_live_auction_job(
                         "auction retry notification delivery finished: %s",
                         delivery_report,
                     )
+            update_system_alert(
+                settings,
+                key="auction-failed-counties",
+                failing=bool(failed_regions),
+                title="法拍縣市抓取",
+                detail=(
+                    f"3 輪重試後仍失敗：{', '.join(failed_regions)}"
+                    if failed_regions
+                    else "重試後全部成功"
+                ),
+            )
 
     def run_auction_job() -> None:
         asyncio.run(run_auction_cycle())
@@ -463,6 +506,7 @@ def main() -> None:
         sale_daily_hour=settings.sale_scheduler_daily_hour,
         sale_daily_minute=settings.sale_scheduler_daily_minute,
     )
+    attach_failure_alerts(scheduler, settings)
     logger.info(
         "scheduler started; market source=official MOI current sales Open Data; "
         "sale capture=%s script=%s; auction capture=%s script=%s; "

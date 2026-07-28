@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     discord_sale_price_drop_channel_id: int = 1530075359490609202
     discord_sale_high_score_channel_id: int = 1530075382873587855
     discord_sale_search_channel_id: int = 1530076451242508318
+    discord_system_alert_channel_id: int = 1530072733818556541
     sale_scheduler_daily_hour: int = Field(default=12, ge=0, le=23)
     sale_scheduler_daily_minute: int = Field(default=0, ge=0, le=59)
     scheduler_daily_hour: int = Field(default=13, ge=0, le=23)
@@ -61,6 +62,7 @@ class Settings(BaseSettings):
         r"D:\網頁識別認證\backups\postgres"
     )
     database_backup_retention_days: int = Field(default=14, ge=1, le=365)
+    system_alert_state_path: Path = Path("logs/system-alert-state.json")
 
     # Official MOI actual-price current-batch sync.  The Judicial Yuan
     # The MOJ auction capture runs separately through the configured local

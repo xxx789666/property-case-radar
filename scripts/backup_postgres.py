@@ -247,4 +247,25 @@ def create_verified_backup() -> Path:
 
 
 if __name__ == "__main__":
-    create_verified_backup()
+    from apps.services.system_alerts import update_system_alert
+
+    active_settings = get_settings()
+    try:
+        archive_path = create_verified_backup()
+    except Exception as backup_error:
+        update_system_alert(
+            active_settings,
+            key="database-backup-job",
+            failing=True,
+            title="PostgreSQL 備份工作",
+            detail=str(backup_error)[:1500],
+        )
+        raise
+    else:
+        update_system_alert(
+            active_settings,
+            key="database-backup-job",
+            failing=False,
+            title="PostgreSQL 備份工作",
+            detail=f"已完成並驗證：{archive_path.name}",
+        )
