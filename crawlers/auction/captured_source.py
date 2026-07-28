@@ -58,6 +58,7 @@ class CapturedAuctionAnnouncementSource(AuctionAnnouncementSource):
         self.umi_ocr_startup_timeout_seconds = umi_ocr_startup_timeout_seconds
         self.python_executable = python_executable
         self.timeout_seconds = timeout_seconds
+        self.last_failed_counties: tuple[str, ...] = ()
 
     async def fetch(self) -> list[RawAnnouncement]:
         if not self.script_path.is_file():
@@ -66,6 +67,43 @@ class CapturedAuctionAnnouncementSource(AuctionAnnouncementSource):
         await self._ensure_ocr_ready()
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.download_dir.mkdir(parents=True, exist_ok=True)
+        result_path = await self._run_capture_process()
+        return self.load_result(result_path)
+
+    async def retry_failed_counties(
+        self,
+        counties: tuple[str, ...],
+    ) -> list[RawAnnouncement]:
+        """Retry only failed counties once and retain the still-failed set."""
+
+        await self._ensure_ocr_ready()
+        announcements: list[RawAnnouncement] = []
+        remaining: list[str] = []
+        for county in counties:
+            county_output = self.output_dir / county
+            county_downloads = self.download_dir / county
+            county_output.mkdir(parents=True, exist_ok=True)
+            county_downloads.mkdir(parents=True, exist_ok=True)
+            try:
+                result_path = await self._run_capture_process(
+                    "--output-dir",
+                    str(county_output),
+                    "--download-dir",
+                    str(county_downloads),
+                    "--single-query",
+                    "--county",
+                    county,
+                    "--auto-query",
+                    "--auto-paginate",
+                    "--download-files",
+                )
+                announcements.extend(self.load_result(result_path))
+            except AuctionCaptureError:
+                remaining.append(county)
+        self.last_failed_counties = tuple(remaining)
+        return announcements
+
+    async def _run_capture_process(self, *extra_args: str) -> Path:
         process = await asyncio.create_subprocess_exec(
             self.python_executable,
             str(self.script_path),
@@ -76,6 +114,7 @@ class CapturedAuctionAnnouncementSource(AuctionAnnouncementSource):
             "--umi-ocr-url",
             self.umi_ocr_url,
             "--headless",
+            *extra_args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env={
@@ -101,13 +140,13 @@ class CapturedAuctionAnnouncementSource(AuctionAnnouncementSource):
                 f"auction capture exited with status {process.returncode}: {detail[-2000:]}"
             )
 
-        result_path = _result_path_from_stdout(stdout_text)
-        return self.load_result(result_path)
+        return _result_path_from_stdout(stdout_text)
 
     def load_result(self, result_path: str | Path) -> list[RawAnnouncement]:
         """Load a completed capture summary without starting another browser run."""
 
         result_path = Path(result_path)
+        self.last_failed_counties = _failed_counties_from_capture_summary(result_path)
         payloads = _load_capture_payloads(result_path)
         announcements: list[RawAnnouncement] = []
         seen: set[Path] = set()
@@ -261,6 +300,21 @@ def _load_capture_payloads(path: Path) -> list[dict[str, Any]]:
     if not results and payload.get("failed_counties"):
         raise AuctionCaptureError(f"all county captures failed; see {path}")
     return results
+
+
+def _failed_counties_from_capture_summary(path: Path) -> tuple[str, ...]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("counties"), list):
+        return ()
+
+    failed: list[str] = []
+    for county in payload["counties"]:
+        if not isinstance(county, dict) or county.get("status") == "ok":
+            continue
+        name = str(county.get("county") or "").strip().replace("台", "臺")
+        if name and name not in failed:
+            failed.append(name)
+    return tuple(failed)
 
 
 def _parse_timestamp(value: object) -> datetime:

@@ -58,6 +58,20 @@ class DiscordRestChannelSender:
         channel = await self._client.fetch_channel(self._channel_id)
         return await channel.send(embed=embed)
 
+    async def edit(self, *, message_id: int, embed: discord.Embed) -> object:
+        channel = await self._client.fetch_channel(self._channel_id)
+        message = await channel.fetch_message(message_id)
+        return await message.edit(embed=embed)
+
+    async def find_message_id(self, *, embed_title: str) -> int | None:
+        channel = await self._client.fetch_channel(self._channel_id)
+        async for message in channel.history(limit=100):
+            if self._client.user is not None and message.author.id != self._client.user.id:
+                continue
+            if message.embeds and message.embeds[0].title == embed_title:
+                return int(message.id)
+        return None
+
 
 @asynccontextmanager
 async def live_auction_notifier(settings: Settings) -> AsyncIterator[AuctionNotificationRouter | None]:

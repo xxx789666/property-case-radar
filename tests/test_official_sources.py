@@ -45,8 +45,8 @@ def _sample_zip() -> bytes:
 
 def test_moi_parser_uses_current_bounded_batch_and_normalizes_units() -> None:
     records, skipped = parse_moi_zip(_sample_zip(), today=date(2026, 7, 24))
-    assert len(records) == 2
-    assert skipped == 3
+    assert len(records) == 3
+    assert skipped == 2
     assert records[0].city == "臺北市"
     assert records[0].district == "中正區"
     assert records[0].unit_price_per_ping_twd == 661_157
@@ -54,6 +54,9 @@ def test_moi_parser_uses_current_bounded_batch_and_normalizes_units() -> None:
     assert records[0].address is None
     assert records[0].building_type == "住宅"
     assert records[1].building_type == "辦公廠房"
+    assert records[2].building_type == "土地"
+    assert records[2].unit_price_per_ping_twd == 99_174
+    assert records[2].building_area_ping == pytest.approx(30.25, rel=0.01)
 
 
 def test_moi_parser_rejects_unknown_schema_and_invalid_zip() -> None:
@@ -96,7 +99,7 @@ async def test_moi_source_uses_validators_and_cached_304(tmp_path: Path) -> None
             today=date(2026, 7, 24),
         ).fetch()
     assert second.downloaded is False
-    assert len(second.records) == 2
+    assert len(second.records) == 3
     assert observed_headers[1]["if-none-match"] == '"fixture-etag"'
     assert "if-modified-since" in observed_headers[1]
 
@@ -113,10 +116,10 @@ async def test_market_sync_is_idempotent(session_factory) -> None:
         first = await sync_market_prices(Source(), session)
         second = await sync_market_prices(Source(), session)
         count = session.scalar(select(func.count()).select_from(MarketPrice))
-    assert first.created == 2
+    assert first.created == 3
     assert second.created == 0
-    assert second.unchanged == 2
-    assert count == 2
+    assert second.unchanged == 3
+    assert count == 3
 
 
 def test_moj_captcha_fixture_fails_closed() -> None:

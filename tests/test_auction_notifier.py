@@ -10,6 +10,7 @@ and discord.Client.close are always patched with AsyncMock.
 """
 
 import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import discord
@@ -114,3 +115,51 @@ async def test_discord_rest_channel_sender_fetches_the_channel_fresh_and_sends()
 
     client.fetch_channel.assert_awaited_once_with(123456789)
     channel.send.assert_awaited_once_with(embed=embed)
+
+
+@pytest.mark.asyncio
+async def test_discord_rest_channel_sender_edits_existing_message() -> None:
+    client = AsyncMock()
+    channel = AsyncMock()
+    message = AsyncMock()
+    client.fetch_channel = AsyncMock(return_value=channel)
+    channel.fetch_message = AsyncMock(return_value=message)
+    sender = DiscordRestChannelSender(client, 123456789)
+
+    embed = discord.Embed(title="updated")
+    await sender.edit(message_id=987654321, embed=embed)
+
+    client.fetch_channel.assert_awaited_once_with(123456789)
+    channel.fetch_message.assert_awaited_once_with(987654321)
+    message.edit.assert_awaited_once_with(embed=embed)
+
+
+@pytest.mark.asyncio
+async def test_discord_rest_channel_sender_finds_existing_summary_by_title() -> None:
+    wanted = SimpleNamespace(
+        id=987654321,
+        author=SimpleNamespace(id=42),
+        embeds=[discord.Embed(title="wanted")],
+    )
+    other = SimpleNamespace(
+        id=123,
+        author=SimpleNamespace(id=42),
+        embeds=[discord.Embed(title="other")],
+    )
+
+    class FakeChannel:
+        async def history(self, *, limit):
+            assert limit == 100
+            for message in (other, wanted):
+                yield message
+
+    client = SimpleNamespace(
+        user=SimpleNamespace(id=42),
+        fetch_channel=AsyncMock(return_value=FakeChannel()),
+    )
+    sender = DiscordRestChannelSender(client, 123456789)
+
+    message_id = await sender.find_message_id(embed_title="wanted")
+
+    assert message_id == 987654321
+    client.fetch_channel.assert_awaited_once_with(123456789)

@@ -4,7 +4,10 @@ import discord
 
 from apps.config import Settings
 from apps.scheduler.main import build_scheduler, make_live_auction_job
-from crawlers.auction.court_crawler import FixtureAuctionAnnouncementSource
+from crawlers.auction.court_crawler import (
+    AuctionAnnouncementSource,
+    FixtureAuctionAnnouncementSource,
+)
 from crawlers.auction.parser import CourtAnnouncementParser
 from database.models.common import MarketPrice, NotificationLog
 
@@ -73,3 +76,42 @@ def test_make_live_auction_job_delivers_through_the_full_production_wiring(sessi
     with session_factory() as session:
         delivered = session.query(NotificationLog).filter(NotificationLog.status == "delivered").count()
         assert delivered > 0
+
+
+def test_failed_counties_retry_three_times_at_fifteen_minute_intervals(
+    session_factory,
+) -> None:
+    class AlwaysFailingCountySource(AuctionAnnouncementSource):
+        def __init__(self) -> None:
+            super().__init__()
+            self.last_failed_counties = ("彰化縣",)
+            self.retry_calls = 0
+
+        async def fetch(self):
+            return []
+
+        async def retry_failed_counties(self, counties):
+            assert counties == ("彰化縣",)
+            self.retry_calls += 1
+            self.last_failed_counties = ("彰化縣",)
+            return []
+
+    source = AlwaysFailingCountySource()
+    settings = Settings(
+        discord_token=None,
+        auction_failed_retry_delay_minutes=15,
+        auction_failed_retry_rounds=3,
+    )
+
+    with patch("apps.scheduler.main.asyncio.sleep", AsyncMock()) as sleep_mock:
+        run_auction_job = make_live_auction_job(
+            session_factory,
+            source,
+            CourtAnnouncementParser(),
+            settings,
+        )
+        run_auction_job()
+
+    assert source.retry_calls == 3
+    assert sleep_mock.await_count == 3
+    assert [call.args[0] for call in sleep_mock.await_args_list] == [900, 900, 900]

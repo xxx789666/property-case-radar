@@ -250,6 +250,10 @@ def channels_for_status_event(
 class MessageChannel(Protocol):
     async def send(self, *, embed: discord.Embed) -> object: ...
 
+    async def edit(self, *, message_id: int, embed: discord.Embed) -> object: ...
+
+    async def find_message_id(self, *, embed_title: str) -> int | None: ...
+
 
 _KIND_TO_CHANNEL_ATTR = {
     "new": "new_channel",

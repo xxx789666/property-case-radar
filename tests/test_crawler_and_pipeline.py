@@ -83,3 +83,43 @@ async def test_land_listing_is_not_scored_against_residential_market(
     assert item.land_area_ping == Decimal("200")
     assert item.market_unit_price_twd is None
     assert item.score is None
+
+
+@pytest.mark.asyncio
+async def test_land_listing_uses_land_market_score(session_factory) -> None:
+    class LandCrawler(SaleCrawler):
+        async def fetch(self):
+            return [
+                SaleListing(
+                    source="591",
+                    source_property_id="land-score",
+                    url="https://land.591.com.tw/sale/2",
+                    city="桃園市",
+                    district="中壢區",
+                    address="測試段",
+                    total_price_twd=14_000_000,
+                    unit_price_per_ping_twd=70_000,
+                    building_area_ping=Decimal("200"),
+                    land_area_ping=Decimal("200"),
+                    building_type="土地",
+                    usage="農地",
+                )
+            ]
+
+    with session_factory() as session:
+        session.add(
+            MarketPrice(
+                city="桃園市",
+                district="中壢區",
+                building_type="土地",
+                average_unit_price_twd=100_000,
+                transaction_count=20,
+            )
+        )
+        session.commit()
+        await ingest_sale_listings(LandCrawler(), session)
+        item = session.scalar(select(Property))
+
+    assert item.market_unit_price_twd == 100_000
+    assert item.discount_rate == Decimal("0.3000")
+    assert item.score == 90

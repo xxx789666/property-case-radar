@@ -1,21 +1,23 @@
 import asyncio
 import logging
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from sqlalchemy.orm import Session, sessionmaker
 
 from apps.config import Settings, get_settings
-from apps.services.auction_daily_summary import deliver_daily_auction_summary
+from apps.services.auction_daily_summary import (
+    deliver_daily_auction_summary,
+    update_daily_auction_summary,
+)
 from apps.services.auction_notification_outbox import deliver_pending_notifications
 from apps.services.auction_notifier import live_auction_notifier
 from apps.services.auction_pipeline import ingest_auction_announcements
 from apps.services.sale_notifier import live_sale_notifier
-from apps.services.sale_pipeline import ingest_sale_listings
+from apps.services.sale_pipeline import ingest_sale_listings, rescore_sale_inventory
 from apps.services.sale_daily_summary import deliver_daily_sale_summary
 from apps.services.sale_status_lifecycle import reconcile_stale_sale_listings
-from crawlers.auction.court_crawler import AuctionAnnouncementSource
+from crawlers.auction.court_crawler import AuctionAnnouncementSource, RawAnnouncement
 from crawlers.auction.captured_source import CapturedAuctionAnnouncementSource
 from crawlers.auction.moj_detail_parser import MojEstateDetailParser
 from crawlers.auction.parser import CourtAnnouncementParser
@@ -31,6 +33,15 @@ from notifications.auction_notification import AuctionNotificationRouter
 from sqlalchemy import func, select
 
 logger = logging.getLogger(__name__)
+
+
+class _RawAnnouncementBatchSource(AuctionAnnouncementSource):
+    def __init__(self, announcements: list[RawAnnouncement]) -> None:
+        super().__init__()
+        self._announcements = announcements
+
+    async def fetch(self) -> list[RawAnnouncement]:
+        return list(self._announcements)
 
 
 def build_scheduler(
@@ -71,45 +82,50 @@ def build_production_scheduler(
     sale_interval_minutes: int = 1440,
     auction_job: Callable[[], None] | None = None,
     auction_interval_hours: int = 24,
+    daily_hour: int = 13,
+    daily_minute: int = 0,
+    sale_daily_hour: int = 12,
+    sale_daily_minute: int = 0,
 ) -> BlockingScheduler:
-    """Build the official-data production scheduler."""
+    """Build the official-data production scheduler at fixed Taipei times.
+
+    The interval arguments remain in the public signature for compatibility
+    with existing callers, but production jobs intentionally use stable
+    wall-clock schedules.  Restarts therefore do not shift daily run times.
+    """
 
     scheduler = BlockingScheduler(timezone="Asia/Taipei")
     if sale_job is not None:
         scheduler.add_job(
             sale_job,
-            "interval",
-            minutes=sale_interval_minutes,
+            "cron",
+            hour=sale_daily_hour,
+            minute=sale_daily_minute,
             id="sale-crawler",
             max_instances=1,
             coalesce=True,
             replace_existing=True,
-            # The operator seeds the first baseline before restarting the
-            # scheduler.  Waiting one full interval also avoids launching
-            # two Playwright captures together at process startup.
-            next_run_time=datetime.now(timezone.utc)
-            + timedelta(minutes=sale_interval_minutes),
         )
     scheduler.add_job(
         market_job,
-        "interval",
-        hours=market_interval_hours,
+        "cron",
+        hour=daily_hour,
+        minute=daily_minute,
         id="market-price-sync",
         max_instances=1,
         coalesce=True,
         replace_existing=True,
-        next_run_time=datetime.now(timezone.utc),
     )
     if auction_job is not None:
         scheduler.add_job(
             auction_job,
-            "interval",
-            hours=auction_interval_hours,
+            "cron",
+            hour=daily_hour,
+            minute=daily_minute,
             id="auction-crawler",
             max_instances=1,
             coalesce=True,
             replace_existing=True,
-            next_run_time=datetime.now(timezone.utc),
         )
     return scheduler
 
@@ -193,6 +209,11 @@ def make_market_sync_job(
                 result.unchanged,
                 result.downloaded,
             )
+            score_report = rescore_sale_inventory(session)
+            logger.info(
+                "sale inventory rescore finished after MOI sync: %s",
+                score_report,
+            )
 
     return run_market_sync
 
@@ -257,12 +278,22 @@ def make_live_auction_job(
         with factory() as session:
             result = await ingest_auction_announcements(source, parser, session, liquidity_index=liquidity_index)
             logger.info("auction crawl finished: %s", result)
+            failed_regions = tuple(getattr(source, "last_failed_counties", ()))
+            if failed_regions:
+                logger.warning(
+                    "auction county capture incomplete; failed regions=%s",
+                    ", ".join(failed_regions),
+                )
+            summary_report = None
+            round_two_summary_report = None
+            round_three_summary_report = None
             async with live_auction_notifier(settings) as notifier:
                 if notifier is not None:
                     summary_report = await deliver_daily_auction_summary(
                         session,
                         notifier.new_channel,
                         settings.discord_auction_new_channel_id,
+                        failed_regions=failed_regions,
                     )
                     logger.info("auction daily summary delivery finished: %s", summary_report)
                     round_two_summary_report = await deliver_daily_auction_summary(
@@ -270,6 +301,7 @@ def make_live_auction_job(
                         notifier.round_channel,
                         settings.discord_auction_round_channel_id,
                         round_number=2,
+                        failed_regions=failed_regions,
                     )
                     logger.info(
                         "auction daily round-two summary delivery finished: %s",
@@ -280,6 +312,7 @@ def make_live_auction_job(
                         notifier.round_channel,
                         settings.discord_auction_round_channel_id,
                         round_number=3,
+                        failed_regions=failed_regions,
                     )
                     logger.info(
                         "auction daily round-three summary delivery finished: %s",
@@ -287,6 +320,87 @@ def make_live_auction_job(
                     )
                     report = await deliver_pending_notifications(session, notifier, liquidity_index=liquidity_index)
                     logger.info("auction notification delivery finished: %s", report)
+
+            retry_method = getattr(source, "retry_failed_counties", None)
+            if not failed_regions or not callable(retry_method):
+                return
+
+            summary_reports = (
+                (summary_report, "new", None),
+                (round_two_summary_report, "round", 2),
+                (round_three_summary_report, "round", 3),
+            )
+
+            for retry_round in range(1, settings.auction_failed_retry_rounds + 1):
+                if not failed_regions:
+                    break
+                logger.warning(
+                    "waiting %s minutes before auction failed-county retry %s/%s: %s",
+                    settings.auction_failed_retry_delay_minutes,
+                    retry_round,
+                    settings.auction_failed_retry_rounds,
+                    ", ".join(failed_regions),
+                )
+                await asyncio.sleep(settings.auction_failed_retry_delay_minutes * 60)
+                try:
+                    retry_announcements = await retry_method(failed_regions)
+                except Exception:  # noqa: BLE001 - retain the failed set for the next round
+                    logger.exception(
+                        "auction failed-county retry %s/%s crashed",
+                        retry_round,
+                        settings.auction_failed_retry_rounds,
+                    )
+                    continue
+
+                if retry_announcements:
+                    retry_result = await ingest_auction_announcements(
+                        _RawAnnouncementBatchSource(retry_announcements),
+                        parser,
+                        session,
+                        liquidity_index=liquidity_index,
+                    )
+                    logger.info(
+                        "auction failed-county retry %s/%s ingest finished: %s",
+                        retry_round,
+                        settings.auction_failed_retry_rounds,
+                        retry_result,
+                    )
+                failed_regions = tuple(getattr(source, "last_failed_counties", ()))
+
+                async with live_auction_notifier(settings) as retry_notifier:
+                    if retry_notifier is None:
+                        continue
+                    for prior_report, channel_kind, round_number in summary_reports:
+                        if prior_report is None or prior_report.message_id is None:
+                            continue
+                        channel = (
+                            retry_notifier.new_channel
+                            if channel_kind == "new"
+                            else retry_notifier.round_channel
+                        )
+                        update_report = await update_daily_auction_summary(
+                            session,
+                            channel,
+                            prior_report.message_id,
+                            day=prior_report.day,
+                            round_number=round_number,
+                            failed_regions=failed_regions,
+                        )
+                        logger.info(
+                            "auction daily summary updated after retry %s/%s: %s",
+                            retry_round,
+                            settings.auction_failed_retry_rounds,
+                            update_report,
+                        )
+                    delivery_report = await deliver_pending_notifications(
+                        session,
+                        retry_notifier,
+                        liquidity_index=liquidity_index,
+                    )
+                    logger.info(
+                        "auction retry notification delivery finished: %s",
+                        delivery_report,
+                    )
 
     def run_auction_job() -> None:
         asyncio.run(run_auction_cycle())
@@ -344,14 +458,23 @@ def main() -> None:
         sale_interval_minutes=settings.sale_crawl_interval_minutes,
         auction_job=auction_job,
         auction_interval_hours=settings.auction_crawl_interval_hours,
+        daily_hour=settings.scheduler_daily_hour,
+        daily_minute=settings.scheduler_daily_minute,
+        sale_daily_hour=settings.sale_scheduler_daily_hour,
+        sale_daily_minute=settings.sale_scheduler_daily_minute,
     )
     logger.info(
         "scheduler started; market source=official MOI current sales Open Data; "
-        "sale capture=%s script=%s; auction capture=%s script=%s",
+        "sale capture=%s script=%s; auction capture=%s script=%s; "
+        "sale schedule=%02d:%02d; market/auction schedule=%02d:%02d Asia/Taipei",
         "enabled" if sale_job is not None else "disabled",
         settings.sale_capture_script,
         "enabled" if auction_job is not None else "disabled",
         settings.auction_capture_script,
+        settings.sale_scheduler_daily_hour,
+        settings.sale_scheduler_daily_minute,
+        settings.scheduler_daily_hour,
+        settings.scheduler_daily_minute,
     )
     scheduler.start()
 

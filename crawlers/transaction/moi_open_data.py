@@ -126,10 +126,10 @@ def parse_moi_zip(
 ) -> tuple[list[ActualTransactionRecord], int]:
     """Parse the official current sales ZIP into bounded, non-PII summaries.
 
-    Only normal property transactions with a positive building area and unit
-    price are retained.  Land-only and parking-only rows are intentionally
-    excluded because they are not comparable to the residential/commercial
-    floor-unit prices used by scoring.
+    Normal building transactions and land-only transactions with positive
+    prices are retained.  Land-only rows use their official land unit price
+    and derive area from total/unit price when the compact fixture/schema has
+    no dedicated land-area field. Parking-only rows remain excluded.
     """
 
     reference_date = today or date.today()
@@ -166,10 +166,11 @@ def parse_moi_zip(
                 for row in reader:
                     try:
                         target = row["交易標的"].strip()
-                        if target.startswith("transaction ") or target in {"土地", "車位"}:
+                        if target.startswith("transaction ") or target == "車位":
                             skipped += 1
                             continue
-                        if "建物" not in target and "房地" not in target:
+                        land_only = "土地" in target and "建物" not in target and "房地" not in target
+                        if not land_only and "建物" not in target and "房地" not in target:
                             skipped += 1
                             continue
                         transaction_date = parse_roc_date(row["交易年月日"])
@@ -178,7 +179,11 @@ def parse_moi_zip(
                             continue
                         total_price = int(row["總價元"])
                         unit_price_sqm = int(row["單價元平方公尺"])
-                        building_area_sqm = float(row["建物移轉總面積平方公尺"])
+                        building_area_sqm = (
+                            total_price / unit_price_sqm
+                            if land_only and unit_price_sqm > 0
+                            else float(row["建物移轉總面積平方公尺"])
+                        )
                         if min(total_price, unit_price_sqm) <= 0 or building_area_sqm <= 0:
                             skipped += 1
                             continue

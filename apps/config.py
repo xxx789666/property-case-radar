@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     discord_sale_price_drop_channel_id: int = 1530075359490609202
     discord_sale_high_score_channel_id: int = 1530075382873587855
     discord_sale_search_channel_id: int = 1530076451242508318
+    sale_scheduler_daily_hour: int = Field(default=12, ge=0, le=23)
+    sale_scheduler_daily_minute: int = Field(default=0, ge=0, le=59)
+    scheduler_daily_hour: int = Field(default=13, ge=0, le=23)
+    scheduler_daily_minute: int = Field(default=0, ge=0, le=59)
     sale_crawl_interval_minutes: int = Field(default=1440, ge=1440, le=10080)
     sale_high_score_threshold: int = Field(default=80, ge=0, le=100)
     sale_capture_enabled: bool = True
@@ -50,6 +54,8 @@ class Settings(BaseSettings):
         r"D:\Umi-OCR_Paddle_v2.1.5\Umi-OCR.exe"
     )
     auction_capture_ocr_startup_timeout_seconds: int = Field(default=45, ge=5, le=300)
+    auction_failed_retry_delay_minutes: int = Field(default=15, ge=1, le=120)
+    auction_failed_retry_rounds: int = Field(default=3, ge=0, le=10)
 
     # Official MOI actual-price current-batch sync.  The Judicial Yuan
     # The MOJ auction capture runs separately through the configured local

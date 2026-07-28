@@ -84,11 +84,21 @@ def build_sale_notification(item: Property, *, kind: str = "new") -> SaleNotific
         if item.market_unit_price_twd
         else "尚無行情"
     )
-    description = "\n".join(
+    area_label = "土地坪數" if item.building_type == "土地" else "建坪"
+    area_value = (
+        item.land_area_ping
+        if item.building_type == "土地" and item.land_area_ping is not None
+        else item.building_area_ping
+    )
+    lines = [
+        f"區域：{item.city}{item.district}",
+        f"總價：{format_twd_wan(item.total_price_twd)}",
+    ]
+    if item.building_type == "土地":
+        lines.append(f"土地類型：{item.usage or '資料未提供'}")
+    lines.extend(
         [
-            f"區域：{item.city}{item.district}",
-            f"總價：{format_twd_wan(item.total_price_twd)}",
-            f"建坪：{item.building_area_ping} 坪",
+            f"{area_label}：{area_value} 坪",
             f"掛牌單價：{item.unit_price_per_ping_twd / 10_000:,.1f} 萬／坪",
             f"區域成交均價：{market}",
             f"低於行情：{format_discount(item.discount_rate)}",
@@ -96,4 +106,5 @@ def build_sale_notification(item: Property, *, kind: str = "new") -> SaleNotific
             f"來源：{item.source}",
         ]
     )
+    description = "\n".join(lines)
     return SaleNotification(title=title, description=description, url=item.url, score=item.score)

@@ -24,13 +24,16 @@ def test_production_scheduler_registers_official_market_and_optional_auction_job
         24,
         auction_job=lambda: None,
         auction_interval_hours=48,
+        daily_hour=13,
+        daily_minute=0,
     )
     assert {job.id for job in scheduler.get_jobs()} == {"market-price-sync", "auction-crawler"}
     assert scheduler.get_job("market-price-sync").max_instances == 1
-    assert scheduler.get_job("auction-crawler").trigger.interval.total_seconds() == 48 * 3600
+    assert str(scheduler.get_job("market-price-sync").trigger) == "cron[hour='13', minute='0']"
+    assert str(scheduler.get_job("auction-crawler").trigger) == "cron[hour='13', minute='0']"
 
 
-def test_production_sale_job_defaults_to_daily_interval() -> None:
+def test_production_sale_job_defaults_to_fixed_1200_taipei_schedule() -> None:
     scheduler = build_production_scheduler(
         lambda: None,
         24,
@@ -38,7 +41,7 @@ def test_production_sale_job_defaults_to_daily_interval() -> None:
     )
     sale_job = scheduler.get_job("sale-crawler")
     assert sale_job is not None
-    assert sale_job.trigger.interval.total_seconds() == 24 * 3600
+    assert str(sale_job.trigger) == "cron[hour='12', minute='0']"
 
 
 def test_scheduler_compose_service_is_separate_hardened_and_secret_scoped() -> None:
