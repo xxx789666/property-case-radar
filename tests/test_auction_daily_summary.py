@@ -169,6 +169,7 @@ async def test_daily_summary_delivery_is_idempotent(session_factory) -> None:
         assert first.total == 1
         assert second.skipped_duplicate is True
         assert second.message_id == 24680
+        channel.edit.assert_awaited()
         assert round_two.delivered is True
         assert round_two_duplicate.skipped_duplicate is True
         assert round_three.delivered is True

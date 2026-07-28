@@ -142,23 +142,30 @@ async def deliver_daily_auction_summary(
     if row is not None and row.status == "delivered":
         counts = daily_auction_counts(session, summary_day, round_number=round_number)
         message_id = None
+        refresh_error = None
         finder = getattr(channel, "find_message_id", None)
         if callable(finder):
             try:
-                title = build_daily_summary_embed(
+                refreshed_embed = build_daily_summary_embed(
                     summary_day,
                     counts,
                     round_number=round_number,
                     failed_regions=failed_regions,
-                ).title
-                message_id = await finder(embed_title=title)
-            except Exception:
-                message_id = None
+                )
+                message_id = await finder(embed_title=refreshed_embed.title)
+                if message_id is not None:
+                    await channel.edit(
+                        message_id=int(message_id),
+                        embed=refreshed_embed,
+                    )
+            except Exception as exc:  # noqa: BLE001 - report but retain idempotency
+                refresh_error = str(exc)
         return DailySummaryResult(
             day=summary_day,
             total=sum(counts.values()),
             delivered=False,
             skipped_duplicate=True,
+            error=refresh_error,
             failed_regions=failed_regions,
             message_id=int(message_id) if message_id is not None else None,
         )
