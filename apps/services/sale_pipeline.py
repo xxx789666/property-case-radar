@@ -12,6 +12,8 @@ from scoring.sale_score import SaleScoreInput, score_sale
 from scoring.land_score import LandScoreInput, score_land
 from notifications.sale_notification import SaleNotificationRouter
 
+MAX_STORABLE_DISCOUNT_RATE = Decimal("999.9999")
+
 
 @dataclass(frozen=True)
 class IngestResult:
@@ -97,6 +99,12 @@ def apply_market_score(
                 price_drop_rate=price_drop_rate,
             )
         )
+    if abs(score.discount_rate) > MAX_STORABLE_DISCOUNT_RATE:
+        item.market_unit_price_twd = None
+        item.discount_rate = None
+        item.score = None
+        return False
+
     item.market_unit_price_twd = market.average_unit_price_twd
     item.discount_rate = score.discount_rate
     item.score = score.total

@@ -123,3 +123,45 @@ async def test_land_listing_uses_land_market_score(session_factory) -> None:
     assert item.market_unit_price_twd == 100_000
     assert item.discount_rate == Decimal("0.3000")
     assert item.score == 90
+
+
+@pytest.mark.asyncio
+async def test_extreme_discount_is_left_unscored_instead_of_overflowing_database(
+    session_factory,
+) -> None:
+    class ExtremeCrawler(SaleCrawler):
+        async def fetch(self):
+            return [
+                SaleListing(
+                    source="591",
+                    source_property_id="extreme-unit-price",
+                    url="https://sale.591.com.tw/home/house/detail/2/extreme",
+                    city="花蓮縣",
+                    district="花蓮市",
+                    total_price_twd=8_582_100_000,
+                    unit_price_per_ping_twd=309_599_600,
+                    building_area_ping=Decimal("27.72"),
+                    building_type="電梯大樓",
+                    usage="住家",
+                )
+            ]
+
+    with session_factory() as session:
+        session.add(
+            MarketPrice(
+                city="花蓮縣",
+                district="花蓮市",
+                building_type="住宅",
+                average_unit_price_twd=251_591,
+                transaction_count=20,
+            )
+        )
+        session.commit()
+
+        result = await ingest_sale_listings(ExtremeCrawler(), session)
+        item = session.scalar(select(Property))
+
+    assert result.created == 1
+    assert item.market_unit_price_twd is None
+    assert item.discount_rate is None
+    assert item.score is None
