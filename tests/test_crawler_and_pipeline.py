@@ -107,14 +107,23 @@ async def test_land_listing_uses_land_market_score(session_factory) -> None:
             ]
 
     with session_factory() as session:
-        session.add(
-            MarketPrice(
-                city="桃園市",
-                district="中壢區",
-                building_type="土地",
-                average_unit_price_twd=100_000,
-                transaction_count=20,
-            )
+        session.add_all(
+            [
+                MarketPrice(
+                    city="桃園市",
+                    district="中壢區",
+                    building_type="土地",
+                    average_unit_price_twd=900_000,
+                    transaction_count=100,
+                ),
+                MarketPrice(
+                    city="桃園市",
+                    district="中壢區",
+                    building_type="土地:農地",
+                    average_unit_price_twd=100_000,
+                    transaction_count=20,
+                ),
+            ]
         )
         session.commit()
         await ingest_sale_listings(LandCrawler(), session)

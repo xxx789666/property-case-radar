@@ -54,7 +54,7 @@ def test_moi_parser_uses_current_bounded_batch_and_normalizes_units() -> None:
     assert records[0].address is None
     assert records[0].building_type == "住宅"
     assert records[1].building_type == "辦公廠房"
-    assert records[2].building_type == "土地"
+    assert records[2].building_type == "土地:其他"
     assert records[2].unit_price_per_ping_twd == 99_174
     assert records[2].building_area_ping == pytest.approx(30.25, rel=0.01)
 
@@ -116,10 +116,36 @@ async def test_market_sync_is_idempotent(session_factory) -> None:
         first = await sync_market_prices(Source(), session)
         second = await sync_market_prices(Source(), session)
         count = session.scalar(select(func.count()).select_from(MarketPrice))
-    assert first.created == 3
+    assert first.created == 4
     assert second.created == 0
-    assert second.unchanged == 3
-    assert count == 3
+    assert second.unchanged == 4
+    assert count == 4
+
+
+def test_moi_land_comparables_are_segmented_by_official_zoning() -> None:
+    header = (
+        "鄉鎮市區,交易標的,交易年月日,總價元,單價元平方公尺,"
+        "建物移轉總面積平方公尺,建物型態,都市土地使用分區,"
+        "非都市土地使用分區,非都市土地使用編定\n"
+    )
+    rows = (
+        "The villages and towns urban district,transaction sign,transaction year month and day,"
+        "total price NTD,the unit price (NTD / square meter),building shifting total area,"
+        "building state,urban zoning,non urban zone,non urban use\n"
+        "中正區,土地,1150701,3000000,30000,0,其他,,一般農業區,農牧用地\n"
+        "中正區,土地,1150702,6000000,60000,0,其他,住宅區,,\n"
+        "中正區,土地,1150703,9000000,90000,0,其他,工業區,,\n"
+    )
+    records, skipped = parse_moi_zip(
+        _zip_with("a_lvr_land_a.csv", header + rows),
+        today=date(2026, 7, 24),
+    )
+    assert skipped == 1
+    assert [record.building_type for record in records] == [
+        "土地:農地",
+        "土地:建地",
+        "土地:工業用地",
+    ]
 
 
 def test_moj_captcha_fixture_fails_closed() -> None:

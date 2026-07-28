@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from apps.services.sale_pipeline import land_market_type
 from scoring.land_score import LandScoreInput, score_land
 
 
@@ -33,3 +34,11 @@ def test_land_score_is_bounded_for_overpriced_sparse_listing() -> None:
     assert score.discount_rate == Decimal("-0.5000")
     assert score.price_discount == 0
     assert 0 <= score.total <= 100
+
+
+def test_listing_land_usage_maps_to_separate_market_segments() -> None:
+    assert land_market_type("一般農業區農地") == "土地:農地"
+    assert land_market_type("住宅用地／建地") == "土地:建地"
+    assert land_market_type("丁種建築用地／工業用地") == "土地:工業用地"
+    assert land_market_type("道路用地") is None
+    assert land_market_type("建地／農地") is None

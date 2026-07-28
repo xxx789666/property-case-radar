@@ -107,6 +107,36 @@ def normalize_building_type(value: str, transaction_target: str) -> str:
     return "住宅"
 
 
+def classify_land_subtype(
+    *,
+    urban_zoning: str = "",
+    non_urban_zone: str = "",
+    non_urban_use: str = "",
+) -> str:
+    """Classify official land comparables without mixing incompatible uses."""
+    designated = non_urban_use or ""
+    if "丁種建築用地" in designated:
+        return "土地:工業用地"
+    if "農牧用地" in designated:
+        return "土地:農地"
+    if any(
+        marker in designated
+        for marker in ("甲種建築用地", "乙種建築用地", "丙種建築用地")
+    ):
+        return "土地:建地"
+    urban = urban_zoning or ""
+    if "工業" in urban:
+        return "土地:工業用地"
+    if any(marker in urban for marker in ("住宅區", "商業區")):
+        return "土地:建地"
+    non_urban = non_urban_zone or ""
+    if "工業區" in non_urban:
+        return "土地:工業用地"
+    if any(marker in non_urban for marker in ("農業區", "特定農業區", "一般農業區")):
+        return "土地:農地"
+    return "土地:其他"
+
+
 def _main_csv_members(archive: zipfile.ZipFile) -> list[str]:
     return sorted(
         name
@@ -187,6 +217,15 @@ def parse_moi_zip(
                         if min(total_price, unit_price_sqm) <= 0 or building_area_sqm <= 0:
                             skipped += 1
                             continue
+                        building_type = normalize_building_type(
+                            row["建物型態"], target
+                        )
+                        if building_type == "土地":
+                            building_type = classify_land_subtype(
+                                urban_zoning=row.get("都市土地使用分區", ""),
+                                non_urban_zone=row.get("非都市土地使用分區", ""),
+                                non_urban_use=row.get("非都市土地使用編定", ""),
+                            )
                         records.append(
                             ActualTransactionRecord(
                                 city=city,
@@ -198,7 +237,7 @@ def parse_moi_zip(
                                 # Full addresses are deliberately not retained:
                                 # market_prices needs only aggregated area data.
                                 address=None,
-                                building_type=normalize_building_type(row["建物型態"], target),
+                                building_type=building_type,
                             )
                         )
                     except (TypeError, ValueError):
@@ -347,6 +386,18 @@ async def sync_market_prices(source: MoiActualPriceSource, session: Session) -> 
     groups: dict[tuple[str, str, str], list[ActualTransactionRecord]] = defaultdict(list)
     for record in batch.records:
         groups[(record.city, record.district, record.building_type or "住宅")].append(record)
+        if (record.building_type or "").startswith("土地:"):
+            # Auctions often have no reliable zoning, so keep the broad land
+            # aggregate for them. Sale listings never use this broad key.
+            groups[(record.city, record.district, "土地")].append(record)
+
+    current_group_keys = set(groups)
+    stale_land_segments = session.scalars(
+        select(MarketPrice).where(MarketPrice.building_type.like("土地:%"))
+    ).all()
+    for item in stale_land_segments:
+        if (item.city, item.district, item.building_type) not in current_group_keys:
+            session.delete(item)
 
     created = updated = unchanged = 0
     for (city, district, building_type), records in sorted(groups.items()):

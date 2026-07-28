@@ -15,6 +15,28 @@ from notifications.sale_notification import SaleNotificationRouter
 MAX_STORABLE_DISCOUNT_RATE = Decimal("999.9999")
 
 
+def land_market_type(usage: str | None) -> str | None:
+    text = (usage or "").strip()
+    categories = set()
+    if any(marker in text for marker in ("工業", "丁種建築")):
+        categories.add("土地:工業用地")
+    if any(marker in text for marker in ("農地", "農牧", "農業", "田", "旱")):
+        categories.add("土地:農地")
+    if any(
+        marker in text
+        for marker in (
+            "建地",
+            "住宅用地",
+            "商業用地",
+            "甲種建築",
+            "乙種建築",
+            "丙種建築",
+        )
+    ):
+        categories.add("土地:建地")
+    return categories.pop() if len(categories) == 1 else None
+
+
 @dataclass(frozen=True)
 class IngestResult:
     processed: int = 0
@@ -53,13 +75,19 @@ def apply_market_score(
     *,
     price_drop_rate: float = 0,
 ) -> bool:
-    market_type = (
-        "土地"
-        if item.building_type == "土地"
-        else item.building_type
-        if item.building_type in {"住宅", "店面"}
-        else "住宅"
-    )
+    if item.building_type == "土地":
+        market_type = land_market_type(item.usage)
+        if market_type is None:
+            item.market_unit_price_twd = None
+            item.discount_rate = None
+            item.score = None
+            return False
+    else:
+        market_type = (
+            item.building_type
+            if item.building_type in {"住宅", "店面"}
+            else "住宅"
+        )
     market = session.scalar(
         select(MarketPrice).where(
             MarketPrice.city == item.city,
