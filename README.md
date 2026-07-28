@@ -58,7 +58,7 @@ python -m apps.scheduler.main
 `AUCTION_CAPTURE_ENABLED=false` 暫停法拍排程。
 
 一般售屋排程每 24 小時執行一次
-`D:\網頁識別認證\capture_sale_results.py`，抓取 22 縣市各自最新三頁公開物件並送入售屋
+`scripts\capture_sale_results.py`，住宅抓取 22 縣市最新三頁、土地逐行政區抓取最新三頁公開物件並送入售屋
 資料庫、評分及 Discord 通知流程。第一次基準匯入不推播既有物件；新上架頻道
 每天只推播一則各縣市新增數量摘要，不逐案推播。降價與新出現的高分物件仍由
 各自頻道通知。可用 `SALE_CAPTURE_ENABLED=false` 暫停此排程。

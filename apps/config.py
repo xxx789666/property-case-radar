@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     sale_crawl_interval_minutes: int = Field(default=1440, ge=1440, le=10080)
     sale_high_score_threshold: int = Field(default=80, ge=0, le=100)
     sale_capture_enabled: bool = True
-    sale_capture_script: Path = Path(r"D:\網頁識別認證\capture_sale_results.py")
+    sale_capture_script: Path = Path("scripts/capture_sale_results.py")
     sale_capture_output_dir: Path = Path(r"D:\網頁識別認證\sale_json")
     sale_capture_max_pages: int = Field(default=3, ge=1, le=20)
     housefun_capture_enabled: bool = True
