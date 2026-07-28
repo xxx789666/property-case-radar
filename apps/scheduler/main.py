@@ -516,6 +516,7 @@ def main() -> None:
                 settings.sale_capture_script,
                 output_dir=settings.sale_capture_output_dir,
                 max_pages=settings.sale_capture_max_pages,
+                json_retention_days=settings.sale_capture_json_retention_days,
             )
         }
         additional_status_verifiers = ()
@@ -548,6 +549,7 @@ def main() -> None:
             umi_ocr_startup_timeout_seconds=(
                 settings.auction_capture_ocr_startup_timeout_seconds
             ),
+            json_retention_days=settings.auction_capture_json_retention_days,
         )
         auction_job = make_live_auction_job(
             factory,

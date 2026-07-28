@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import sys
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+from crawlers.capture_retention import remove_expired_capture_json
 from crawlers.sale.base import CompliancePolicy, SaleCrawler, SaleListing
+
+logger = logging.getLogger(__name__)
 
 
 class SaleCaptureError(RuntimeError):
@@ -27,6 +31,7 @@ class CapturedSaleCrawler(SaleCrawler):
         city: str | None = None,
         python_executable: str = sys.executable,
         timeout_seconds: float = 60 * 60,
+        json_retention_days: int = 30,
         policy: CompliancePolicy | None = None,
     ) -> None:
         super().__init__(policy)
@@ -36,6 +41,7 @@ class CapturedSaleCrawler(SaleCrawler):
         self.city = city
         self.python_executable = python_executable
         self.timeout_seconds = timeout_seconds
+        self.json_retention_days = json_retention_days
 
     async def fetch(self) -> list[SaleListing]:
         if not self.script_path.is_file():
@@ -73,7 +79,16 @@ class CapturedSaleCrawler(SaleCrawler):
                 f"sale capture exited with status {process.returncode}: {detail[-2000:]}"
             )
         result_path = _result_path_from_stdout(stdout_text)
-        return self.load_result(result_path)
+        listings = self.load_result(result_path)
+        try:
+            removed = remove_expired_capture_json(
+                self.output_dir,
+                retention_days=self.json_retention_days,
+            )
+            logger.info("sale capture JSON retention removed %s expired files", removed)
+        except OSError:
+            logger.exception("sale capture JSON retention cleanup failed")
+        return listings
 
     def load_result(self, result_path: str | Path) -> list[SaleListing]:
         payload = json.loads(Path(result_path).read_text(encoding="utf-8"))

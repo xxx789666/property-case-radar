@@ -51,6 +51,10 @@ OpenAPI 位於 `/docs`。
 python -m apps.scheduler.main
 ```
 
+正式 Windows PostgreSQL 17 的資料目錄為 `D:\PostgreSQL\17\data`。
+`C:\Program Files\PostgreSQL\17\data` 僅暫時保留為搬遷回復副本，不是目前
+服務使用中的資料目錄。
+
 擷取腳本需要 Playwright、Chromium、`requests`，以及可連線的 Umi-OCR
 （預設 `http://127.0.0.1:1224/api/ocr`）。排程會先檢查服務；若尚未啟動，
 會在背景執行 `D:\Umi-OCR_Paddle_v2.1.5\Umi-OCR.exe`，等待 API 就緒後再抓取。
@@ -61,7 +65,9 @@ python -m apps.scheduler.main
 `scripts\capture_sale_results.py`，住宅抓取 22 縣市最新三頁、土地逐行政區抓取最新三頁公開物件並送入售屋
 資料庫、評分及 Discord 通知流程。第一次基準匯入不推播既有物件；新上架頻道
 每天只推播一則各縣市新增數量摘要，不逐案推播。降價與新出現的高分物件仍由
-各自頻道通知。可用 `SALE_CAPTURE_ENABLED=false` 暫停此排程。
+各自頻道通知。房地與法拍原始 JSON 預設各保留30天，成功抓取後自動刪除超期
+JSON，不會刪除法拍 PDF、HTML 或資料庫內容。可用
+`SALE_CAPTURE_ENABLED=false` 暫停此排程。
 物件連續 3 天未在最新三頁再次出現時，排程會開啟其 591 公開原始網址驗證；
 只有頁面明確顯示不存在、關閉或下架才標記為 `inactive`。網路錯誤、驗證頁或
 無法辨識的回應不改狀態，歷史資料也不刪除。

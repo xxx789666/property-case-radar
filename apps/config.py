@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     sale_capture_script: Path = Path("scripts/capture_sale_results.py")
     sale_capture_output_dir: Path = Path(r"D:\網頁識別認證\sale_json")
     sale_capture_max_pages: int = Field(default=3, ge=1, le=20)
+    sale_capture_json_retention_days: int = Field(default=30, ge=1, le=365)
     housefun_capture_enabled: bool = True
     housefun_capture_max_pages: int = Field(default=3, ge=1, le=3)
     housefun_status_verify_limit: int = Field(default=50, ge=1, le=200)
@@ -58,6 +59,7 @@ class Settings(BaseSettings):
         r"D:\Umi-OCR_Paddle_v2.1.5\Umi-OCR.exe"
     )
     auction_capture_ocr_startup_timeout_seconds: int = Field(default=45, ge=5, le=300)
+    auction_capture_json_retention_days: int = Field(default=30, ge=1, le=365)
     auction_failed_retry_delay_minutes: int = Field(default=15, ge=1, le=120)
     auction_failed_retry_rounds: int = Field(default=3, ge=0, le=10)
 

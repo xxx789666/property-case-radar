@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -17,11 +18,14 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 import httpx
 from pypdf import PdfReader
 
+from crawlers.capture_retention import remove_expired_capture_json
 from crawlers.auction.court_crawler import (
     AuctionAnnouncementSource,
     CompliancePolicy,
     RawAnnouncement,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AuctionCaptureError(RuntimeError):
@@ -47,6 +51,7 @@ class CapturedAuctionAnnouncementSource(AuctionAnnouncementSource):
         umi_ocr_startup_timeout_seconds: float = 45,
         python_executable: str = sys.executable,
         timeout_seconds: float = 4 * 60 * 60,
+        json_retention_days: int = 30,
         policy: CompliancePolicy | None = None,
     ) -> None:
         super().__init__(policy)
@@ -58,6 +63,7 @@ class CapturedAuctionAnnouncementSource(AuctionAnnouncementSource):
         self.umi_ocr_startup_timeout_seconds = umi_ocr_startup_timeout_seconds
         self.python_executable = python_executable
         self.timeout_seconds = timeout_seconds
+        self.json_retention_days = json_retention_days
         self.last_failed_counties: tuple[str, ...] = ()
 
     async def fetch(self) -> list[RawAnnouncement]:
@@ -68,7 +74,16 @@ class CapturedAuctionAnnouncementSource(AuctionAnnouncementSource):
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.download_dir.mkdir(parents=True, exist_ok=True)
         result_path = await self._run_capture_process()
-        return self.load_result(result_path)
+        announcements = self.load_result(result_path)
+        try:
+            removed = remove_expired_capture_json(
+                self.output_dir,
+                retention_days=self.json_retention_days,
+            )
+            logger.info("auction capture JSON retention removed %s expired files", removed)
+        except OSError:
+            logger.exception("auction capture JSON retention cleanup failed")
+        return announcements
 
     async def retry_failed_counties(
         self,
