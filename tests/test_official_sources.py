@@ -21,6 +21,7 @@ from crawlers.transaction.moi_open_data import (
     MoiActualPriceSource,
     MoiBatch,
     MoiOpenDataError,
+    parse_available_seasons,
     parse_moi_zip,
     sync_market_prices,
 )
@@ -84,6 +85,7 @@ async def test_moi_source_uses_validators_and_cached_304(tmp_path: Path) -> None
             cache_dir=tmp_path,
             client=client,
             today=date(2026, 7, 24),
+            history_years=0,
         ).fetch()
     assert first.downloaded is True
     assert observed_headers[0]["user-agent"] == DEFAULT_USER_AGENT
@@ -97,11 +99,59 @@ async def test_moi_source_uses_validators_and_cached_304(tmp_path: Path) -> None
             cache_dir=tmp_path,
             client=client,
             today=date(2026, 7, 24),
+            history_years=0,
         ).fetch()
     assert second.downloaded is False
     assert len(second.records) == 3
     assert observed_headers[1]["if-none-match"] == '"fixture-etag"'
     assert "if-modified-since" in observed_headers[1]
+
+
+def test_official_season_options_are_sorted_newest_first() -> None:
+    html = """
+    <option value="114S4">114年第4季</option>
+    <option value="115S2">115年第2季</option>
+    <option value="115S1">115年第1季</option>
+    """
+
+    assert parse_available_seasons(html) == ["115S2", "115S1", "114S4"]
+
+
+@pytest.mark.asyncio
+async def test_moi_source_downloads_and_caches_recent_land_seasons(
+    tmp_path: Path,
+) -> None:
+    payload = _sample_zip()
+    season_html = "".join(
+        f'<option value="115S{quarter}"></option>'
+        for quarter in range(4, 0, -1)
+    )
+    seen: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if "DownloadSeason_ajax_list" in str(request.url):
+            return httpx.Response(200, text=season_html)
+        return httpx.Response(200, content=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        first = await MoiActualPriceSource(
+            cache_dir=tmp_path,
+            client=client,
+            today=date(2026, 7, 24),
+            history_years=1,
+        ).fetch()
+        second = await MoiActualPriceSource(
+            cache_dir=tmp_path,
+            client=client,
+            today=date(2026, 7, 24),
+            history_years=1,
+        ).fetch()
+
+    assert len(first.records) == 3
+    assert len(second.records) == 3
+    assert len(list(tmp_path.glob("moi-history-*.zip"))) == 4
+    assert sum("DownloadSeason?season=" in url for url in seen) == 4
 
 
 @pytest.mark.asyncio

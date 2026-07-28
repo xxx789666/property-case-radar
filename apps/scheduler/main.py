@@ -508,7 +508,10 @@ def main() -> None:
     settings = get_settings()
     engine = create_db_engine(settings.database_url)
     factory = create_session_factory(engine)
-    market_source = MoiActualPriceSource(cache_dir=settings.moi_cache_dir)
+    market_source = MoiActualPriceSource(
+        cache_dir=settings.moi_cache_dir,
+        history_years=settings.moi_history_years,
+    )
     sale_job: Callable[[], None] | None = None
     if settings.sale_capture_enabled:
         sale_sources = {

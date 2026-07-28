@@ -15,6 +15,7 @@ import csv
 import io
 import json
 import os
+import re
 import ssl
 import time
 import zipfile
@@ -33,6 +34,13 @@ from crawlers.transaction.actual_price import ActualTransactionRecord
 from database.models.common import MarketPrice
 
 MOI_CURRENT_SALES_CSV_URL = "https://plvr.land.moi.gov.tw/opendata/lvr_landAcsv.zip"
+MOI_HISTORY_SEASONS_URL = (
+    "https://plvr.land.moi.gov.tw/DownloadSeason_ajax_list"
+)
+MOI_HISTORY_ZIP_URL = (
+    "https://plvr.land.moi.gov.tw/DownloadSeason"
+    "?season={season}&type=zip&fileName=lvr_landcsv.zip"
+)
 DEFAULT_USER_AGENT = (
     "PropertyCaseRadar/1.0 "
     "(+https://github.com/xxx789666/Property-Case-Radar-Git; compliance contact via repository)"
@@ -153,6 +161,8 @@ def parse_moi_zip(
     today: date | None = None,
     max_age_days: int = 365,
     max_records: int = 100_000,
+    oldest_date: date | None = None,
+    only_land: bool = False,
 ) -> tuple[list[ActualTransactionRecord], int]:
     """Parse the official current sales ZIP into bounded, non-PII summaries.
 
@@ -163,7 +173,7 @@ def parse_moi_zip(
     """
 
     reference_date = today or date.today()
-    oldest = reference_date - timedelta(days=max_age_days)
+    oldest = oldest_date or reference_date - timedelta(days=max_age_days)
     records: list[ActualTransactionRecord] = []
     skipped = 0
 
@@ -199,8 +209,18 @@ def parse_moi_zip(
                         if target.startswith("transaction ") or target == "車位":
                             skipped += 1
                             continue
-                        land_only = "土地" in target and "建物" not in target and "房地" not in target
-                        if not land_only and "建物" not in target and "房地" not in target:
+                        is_land_only = (
+                            "土地" in target
+                            and "建物" not in target
+                            and "房地" not in target
+                        )
+                        if only_land and not is_land_only:
+                            continue
+                        if (
+                            not is_land_only
+                            and "建物" not in target
+                            and "房地" not in target
+                        ):
                             skipped += 1
                             continue
                         transaction_date = parse_roc_date(row["交易年月日"])
@@ -211,7 +231,7 @@ def parse_moi_zip(
                         unit_price_sqm = int(row["單價元平方公尺"])
                         building_area_sqm = (
                             total_price / unit_price_sqm
-                            if land_only and unit_price_sqm > 0
+                            if is_land_only and unit_price_sqm > 0
                             else float(row["建物移轉總面積平方公尺"])
                         )
                         if min(total_price, unit_price_sqm) <= 0 or building_area_sqm <= 0:
@@ -238,6 +258,7 @@ def parse_moi_zip(
                                 # market_prices needs only aggregated area data.
                                 address=None,
                                 building_type=building_type,
+                                source_id=(row.get("編號") or "").strip() or None,
                             )
                         )
                     except (TypeError, ValueError):
@@ -248,8 +269,38 @@ def parse_moi_zip(
     return records, skipped
 
 
+def parse_available_seasons(html_text: str) -> list[str]:
+    seasons = set(re.findall(r'value=["\'](\d{3}S[1-4])["\']', html_text))
+    return sorted(
+        seasons,
+        key=lambda value: (int(value[:3]), int(value[-1])),
+        reverse=True,
+    )
+
+
+def _years_ago(value: date, years: int) -> date:
+    try:
+        return value.replace(year=value.year - years)
+    except ValueError:
+        return value.replace(year=value.year - years, day=28)
+
+
+def _transaction_key(record: ActualTransactionRecord) -> tuple[object, ...]:
+    if record.source_id:
+        return (record.city, record.source_id)
+    return (
+        record.city,
+        record.district,
+        record.transaction_date,
+        record.unit_price_per_ping_twd,
+        record.total_price_twd,
+        round(record.building_area_ping, 4),
+        record.building_type,
+    )
+
+
 class MoiActualPriceSource:
-    """Bounded HTTP client for the official MOI current sales batch."""
+    """Bounded HTTP client for current and recent official MOI sales data."""
 
     def __init__(
         self,
@@ -261,11 +312,17 @@ class MoiActualPriceSource:
         max_bytes: int = 25 * 1024 * 1024,
         max_retries: int = 2,
         min_request_interval_seconds: float = 1,
+        history_years: int = 3,
+        history_seasons_url: str = MOI_HISTORY_SEASONS_URL,
+        history_zip_url: str = MOI_HISTORY_ZIP_URL,
+        history_max_bytes: int = 32 * 1024 * 1024,
         today: date | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         if min_request_interval_seconds < 1:
             raise ValueError("official-source request interval must be at least one second")
+        if not 0 <= history_years <= 10:
+            raise ValueError("history_years must be between 0 and 10")
         self.cache_dir = Path(cache_dir)
         self.url = url
         self.user_agent = user_agent
@@ -273,6 +330,10 @@ class MoiActualPriceSource:
         self.max_bytes = max_bytes
         self.max_retries = max_retries
         self.min_request_interval_seconds = min_request_interval_seconds
+        self.history_years = history_years
+        self.history_seasons_url = history_seasons_url
+        self.history_zip_url = history_zip_url
+        self.history_max_bytes = history_max_bytes
         self.today = today
         self._client = client
         self._last_request_at: float | None = None
@@ -310,12 +371,121 @@ class MoiActualPriceSource:
         os.replace(archive_tmp, self._archive_path)
         os.replace(metadata_tmp, self._metadata_path)
 
+    def _history_archive_path(self, season: str) -> Path:
+        return self.cache_dir / f"moi-history-{season}.zip"
+
     async def _throttle(self) -> None:
         if self._last_request_at is not None:
             elapsed = time.monotonic() - self._last_request_at
             if elapsed < self.min_request_interval_seconds:
                 await asyncio.sleep(self.min_request_interval_seconds - elapsed)
         self._last_request_at = time.monotonic()
+
+    async def _request(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        *,
+        headers: dict[str, str],
+    ) -> httpx.Response:
+        response: httpx.Response | None = None
+        for attempt in range(self.max_retries + 1):
+            await self._throttle()
+            try:
+                response = await client.get(url, headers=headers)
+            except httpx.HTTPError as exc:
+                if attempt >= self.max_retries:
+                    raise MoiOpenDataError(
+                        "MOI download failed after bounded retries"
+                    ) from exc
+                await asyncio.sleep(max(1, 2**attempt))
+                continue
+            if (
+                response.status_code in {429, 500, 502, 503, 504}
+                and attempt < self.max_retries
+            ):
+                await asyncio.sleep(max(1, 2**attempt))
+                continue
+            return response
+        raise MoiOpenDataError("MOI download produced no response")
+
+    async def _fetch_land_history(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        reference_date: date,
+    ) -> tuple[list[ActualTransactionRecord], int, bool]:
+        if self.history_years == 0:
+            return [], 0, False
+
+        response = await self._request(
+            client,
+            self.history_seasons_url,
+            headers={"User-Agent": self.user_agent, "Accept": "text/html"},
+        )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise MoiOpenDataError(
+                f"MOI season list returned HTTP {response.status_code}"
+            ) from exc
+        if len(response.content) > 1024 * 1024:
+            raise MoiOpenDataError("MOI season list exceeds configured size bound")
+        available = parse_available_seasons(response.text)
+        requested_count = self.history_years * 4
+        seasons = available[:requested_count]
+        if len(seasons) < requested_count:
+            raise MoiOpenDataError(
+                f"MOI published only {len(seasons)} of {requested_count} required seasons"
+            )
+
+        oldest = _years_ago(reference_date, self.history_years)
+        records: list[ActualTransactionRecord] = []
+        skipped = 0
+        downloaded = False
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        for season in seasons:
+            archive_path = self._history_archive_path(season)
+            archive_downloaded = False
+            try:
+                content = archive_path.read_bytes()
+            except OSError:
+                season_response = await self._request(
+                    client,
+                    self.history_zip_url.format(season=season),
+                    headers={
+                        "User-Agent": self.user_agent,
+                        "Accept": "application/zip",
+                    },
+                )
+                try:
+                    season_response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    raise MoiOpenDataError(
+                        f"MOI season {season} returned HTTP "
+                        f"{season_response.status_code}"
+                    ) from exc
+                content = season_response.content
+                if len(content) > self.history_max_bytes:
+                    raise MoiOpenDataError(
+                        f"MOI season {season} exceeds configured size bound"
+                    )
+                archive_downloaded = True
+            season_records, season_skipped = parse_moi_zip(
+                content,
+                today=reference_date,
+                oldest_date=oldest,
+                max_records=150_000,
+                only_land=True,
+            )
+            if archive_downloaded:
+                archive_tmp = archive_path.with_suffix(".zip.tmp")
+                archive_tmp.write_bytes(content)
+                os.replace(archive_tmp, archive_path)
+                downloaded = True
+            records.extend(season_records)
+            skipped += season_skipped
+        return records, skipped, downloaded
 
     async def fetch(self) -> MoiBatch:
         metadata = self._load_metadata()
@@ -332,23 +502,7 @@ class MoiActualPriceSource:
             verify=truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT),
         )
         try:
-            response: httpx.Response | None = None
-            for attempt in range(self.max_retries + 1):
-                await self._throttle()
-                try:
-                    response = await client.get(self.url, headers=headers)
-                except httpx.HTTPError as exc:
-                    if attempt >= self.max_retries:
-                        raise MoiOpenDataError("MOI download failed after bounded retries") from exc
-                    await asyncio.sleep(max(1, 2**attempt))
-                    continue
-                if response.status_code in {429, 500, 502, 503, 504} and attempt < self.max_retries:
-                    await asyncio.sleep(max(1, 2**attempt))
-                    continue
-                break
-
-            if response is None:
-                raise MoiOpenDataError("MOI download produced no response")
+            response = await self._request(client, self.url, headers=headers)
             if response.status_code == 304:
                 try:
                     content = self._archive_path.read_bytes()
@@ -366,13 +520,27 @@ class MoiActualPriceSource:
                 self._write_cache(content, response)
                 downloaded = True
 
-            records, skipped = parse_moi_zip(content, today=self.today)
+            reference_date = self.today or date.today()
+            current_records, skipped = parse_moi_zip(
+                content,
+                today=reference_date,
+                oldest_date=_years_ago(reference_date, self.history_years or 1),
+            )
+            history_records, history_skipped, history_downloaded = (
+                await self._fetch_land_history(
+                    client,
+                    reference_date=reference_date,
+                )
+            )
+            unique_records: dict[tuple[object, ...], ActualTransactionRecord] = {}
+            for record in current_records + history_records:
+                unique_records.setdefault(_transaction_key(record), record)
             return MoiBatch(
-                records=records,
-                downloaded=downloaded,
+                records=list(unique_records.values()),
+                downloaded=downloaded or history_downloaded,
                 etag=response.headers.get("etag") or metadata.get("etag"),
                 last_modified=response.headers.get("last-modified") or metadata.get("last_modified"),
-                skipped_rows=skipped,
+                skipped_rows=skipped + history_skipped,
             )
         finally:
             if owns_client:

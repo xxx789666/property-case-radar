@@ -73,7 +73,8 @@ class Settings(BaseSettings):
     # The MOJ auction capture runs separately through the configured local
     # Playwright script; this remains the official open-data price source.
     market_sync_interval_hours: int = Field(default=24, ge=6, le=168)
-    moi_cache_dir: str = "/var/cache/radar-scheduler"
+    moi_cache_dir: Path = Path(r"D:\網頁識別認證\moi_cache")
+    moi_history_years: int = Field(default=3, ge=1, le=10)
 
     @model_validator(mode="after")
     def validate_delay_range(self) -> "Settings":

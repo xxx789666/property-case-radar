@@ -55,6 +55,10 @@ python -m apps.scheduler.main
 `C:\Program Files\PostgreSQL\17\data` 僅暫時保留為搬遷回復副本，不是目前
 服務使用中的資料目錄。
 
+實價基準每天同步內政部當期公開資料，並從官方季度下載介面快取最近12季
+（3年）的土地交易至 `D:\網頁識別認證\moi_cache`。土地依行政區及建地、
+農地、工業用地分組，當期與季度重疊交易會先去重再彙總及重新評分。
+
 擷取腳本需要 Playwright、Chromium、`requests`，以及可連線的 Umi-OCR
 （預設 `http://127.0.0.1:1224/api/ocr`）。排程會先檢查服務；若尚未啟動，
 會在背景執行 `D:\Umi-OCR_Paddle_v2.1.5\Umi-OCR.exe`，等待 API 就緒後再抓取。
