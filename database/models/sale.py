@@ -30,6 +30,9 @@ class Property(Base, TimestampMixin):
     usage: Mapped[str | None] = mapped_column(String(64))
     has_parking: Mapped[bool | None] = mapped_column(Boolean)
     listed_date: Mapped[date | None] = mapped_column(Date)
+    # One-time inventory seeding/scope expansion is searchable inventory,
+    # but must not be presented as a newly listed property.
+    is_backfill: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     market_unit_price_twd: Mapped[int | None] = mapped_column(BigInteger)

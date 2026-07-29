@@ -7,7 +7,7 @@ from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import discord
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from apps.services.auction_daily_summary import TAIWAN_REGIONS
@@ -33,8 +33,20 @@ def daily_sale_counts(session: Session, day: date) -> dict[str, int]:
     end = start + timedelta(days=1)
     rows = session.execute(
         select(Property.city, func.count(Property.id))
-        .where(Property.first_seen_at >= start)
-        .where(Property.first_seen_at < end)
+        .where(Property.is_backfill.is_(False))
+        .where(
+            or_(
+                and_(
+                    Property.listed_date.is_not(None),
+                    Property.listed_date == day,
+                ),
+                and_(
+                    Property.listed_date.is_(None),
+                    Property.first_seen_at >= start,
+                    Property.first_seen_at < end,
+                ),
+            )
+        )
         .group_by(Property.city)
     )
     counts = {region: 0 for region in TAIWAN_REGIONS}

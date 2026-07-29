@@ -50,14 +50,15 @@ class SaleNotificationRouter:
         send_new: bool = True,
     ) -> list[str]:
         kinds: list[str] = []
-        if created and send_new:
+        genuine_new = created and not item.is_backfill
+        if genuine_new and send_new:
             await self._send(self.new_channel, item, "new")
             kinds.append("new")
         if price_dropped:
             await self._send(self.price_drop_channel, item, "price_drop")
             kinds.append("price_drop")
         if (
-            (created or price_dropped)
+            (genuine_new or price_dropped)
             and item.score is not None
             and item.score >= self.high_score_threshold
         ):

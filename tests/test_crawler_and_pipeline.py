@@ -43,6 +43,36 @@ def test_compliance_policy_refuses_bypass() -> None:
 
 
 @pytest.mark.asyncio
+async def test_backfill_ingestion_marks_created_inventory(session_factory) -> None:
+    class BaselineCrawler(SaleCrawler):
+        async def fetch(self):
+            return [
+                SaleListing(
+                    source="fixture",
+                    source_property_id="baseline-1",
+                    url="https://example.invalid/baseline-1",
+                    city="桃園市",
+                    district="中壢區",
+                    total_price_twd=10_000_000,
+                    unit_price_per_ping_twd=300_000,
+                    building_area_ping=Decimal("30"),
+                    score=90,
+                )
+            ]
+
+    with session_factory() as session:
+        result = await ingest_sale_listings(
+            BaselineCrawler(),
+            session,
+            backfill=True,
+        )
+        item = session.scalar(select(Property))
+
+    assert result.created == 1
+    assert item.is_backfill is True
+
+
+@pytest.mark.asyncio
 async def test_land_listing_is_not_scored_against_residential_market(
     session_factory,
 ) -> None:

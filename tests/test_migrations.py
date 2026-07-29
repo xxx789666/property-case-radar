@@ -117,6 +117,7 @@ def test_alembic_history_resolves_without_a_database() -> None:
     assert "0001" in result.stdout
     assert "0002" in result.stdout
     assert "0003" in result.stdout
+    assert "0005" in result.stdout
 
 
 def test_upgrade_0001_creates_only_sale_and_shared_tables(tmp_path) -> None:

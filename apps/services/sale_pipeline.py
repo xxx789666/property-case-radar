@@ -169,6 +169,7 @@ async def ingest_sale_listings(
     *,
     notifier: SaleNotificationRouter | None = None,
     notify_new: bool = True,
+    backfill: bool = False,
 ) -> IngestResult:
     repository = PropertyRepository(session)
     listings = await crawler.fetch()
@@ -184,12 +185,14 @@ async def ingest_sale_listings(
         )
         previous_price = previous.total_price_twd if previous else listing.total_price_twd
         item, created, dropped = repository.upsert_listing(listing)
+        if created and backfill:
+            item.is_backfill = True
         drop_rate = max(0.0, 1 - item.total_price_twd / previous_price)
         apply_market_score(item, session, price_drop_rate=drop_rate)
         created_count += int(created)
         price_drops += int(dropped)
         notification_events.append((item, created, dropped))
-        if created:
+        if created and not backfill:
             queue_sale_subscription_matches(session, item)
     session.commit()
     if notifier is not None:

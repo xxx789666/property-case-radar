@@ -31,6 +31,12 @@ def _listing(source_id: str, city: str) -> SaleListing:
     )
 
 
+def _dated_listing(source_id: str, city: str, listed_date: date) -> SaleListing:
+    values = _listing(source_id, city).to_property_values()
+    values["listed_date"] = listed_date
+    return SaleListing(**values)
+
+
 def test_daily_sale_counts_include_zero_regions(session_factory) -> None:
     day = date(2026, 7, 27)
     with session_factory() as session:
@@ -49,6 +55,30 @@ def test_daily_sale_counts_include_zero_regions(session_factory) -> None:
     assert counts["桃園市"] == 1
     assert counts["臺北市"] == 1
     assert counts["連江縣"] == 0
+
+
+def test_daily_sale_counts_exclude_backfill_and_old_listed_dates(
+    session_factory,
+) -> None:
+    day = date(2026, 7, 29)
+    with session_factory() as session:
+        backfill, _, _ = PropertyRepository(session).upsert_listing(
+            _listing("backfill", "桃園市")
+        )
+        old_listing, _, _ = PropertyRepository(session).upsert_listing(
+            _dated_listing("old-listed-date", "桃園市", date(2026, 7, 20))
+        )
+        today_listing, _, _ = PropertyRepository(session).upsert_listing(
+            _dated_listing("today-listed-date", "桃園市", day)
+        )
+        for item in (backfill, old_listing, today_listing):
+            item.first_seen_at = datetime(2026, 7, 29, 12, 0, tzinfo=TAIPEI)
+        backfill.is_backfill = True
+        session.commit()
+
+        counts = daily_sale_counts(session, day)
+
+    assert counts["桃園市"] == 1
 
 
 def test_daily_sale_summary_embed_lists_counts_and_total() -> None:

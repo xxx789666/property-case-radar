@@ -30,7 +30,12 @@ async def _run(*, refresh: bool = False, city: str | None = None) -> dict[str, o
             max_pages=settings.sale_capture_max_pages,
             city=city,
         )
-        result = await ingest_sale_listings(crawler, session, notifier=None)
+        result = await ingest_sale_listings(
+            crawler,
+            session,
+            notifier=None,
+            backfill=True,
+        )
         return {
             "status": "ok",
             "processed": result.processed,
