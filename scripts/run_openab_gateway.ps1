@@ -10,6 +10,9 @@ $runtimeConfig = Join-Path $runtimeDir "config-radar-agent.toml"
 $tokenSecret = Join-Path $repoRoot "openab\.local\openab_discord_bot_token"
 $componentLog = Join-Path $logDir "openab-gateway.log"
 $brokerScript = Join-Path $repoRoot "openab\gateway\pdf-upload-broker.mjs"
+$allowlistSyncScript = Join-Path $repoRoot "scripts\sync_discord_qa_allowlist.py"
+$allowlistFile = Join-Path $runtimeDir "discord-qa-allowed-users.json"
+$roleIdFile = Join-Path $repoRoot "openab\.local\discord_qa_role_id"
 $brokerLog = Join-Path $logDir "openab-pdf-upload-broker.jsonl"
 $brokerStderr = Join-Path $logDir "openab-pdf-upload-broker.stderr.log"
 $downloadRoot = $env:AUCTION_CAPTURE_DOWNLOAD_DIR
@@ -38,7 +41,14 @@ Set-Location -LiteralPath $repoRoot
 $brokerProcess = $null
 $env:OPENAB_DISCORD_BOT_TOKEN = [IO.File]::ReadAllText($tokenSecret).Trim()
 try {
-    & python -X utf8 (Join-Path $repoRoot "openab\gateway\runtime_config.py") $configTemplate $runtimeConfig
+    & python -X utf8 $allowlistSyncScript `
+        --token-file $tokenSecret `
+        --role-id-file $roleIdFile `
+        --allowlist-file $allowlistFile
+    if ($LASTEXITCODE -ne 0) { throw "Discord Q&A allowlist sync failed: $LASTEXITCODE" }
+
+    & python -X utf8 (Join-Path $repoRoot "openab\gateway\runtime_config.py") `
+        $configTemplate $runtimeConfig $allowlistFile
     if ($LASTEXITCODE -ne 0) { throw "OpenAB runtime config rendering failed: $LASTEXITCODE" }
 
     $env:RADAR_AUCTION_DOWNLOAD_DIR = $downloadRoot

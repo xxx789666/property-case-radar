@@ -32,12 +32,19 @@ powershell -ExecutionPolicy Bypass -File scripts/register_openab_tasks.ps1
 - Sidecar log: `logs/openab-sidecar.log`
 - Per-query JSONL audit: `logs/openab-query.jsonl`
 - Windows tasks: `Property Case Radar OpenAB Gateway` and
-  `Property Case Radar OpenAB Sidecar` (at user logon, restart on failure)
+  `Property Case Radar OpenAB Sidecar` (at user logon, restart on failure),
+  plus `Property Case Radar Discord Q&A Allowlist Sync` (every 5 minutes)
 - Sidecar listener: loopback only, `127.0.0.1:18765`
 
 The native template is `openab/windows/config-radar-agent.toml`. The gateway
 holds the Discord token but never `DATABASE_URL`; the sidecar reads the
 dedicated `radar_agent_ro` URL and passes it only to each ACP child.
+The allowlist sync assigns every non-bot guild member the `Radar 問答` role,
+writes their concrete Discord IDs to the gitignored runtime allowlist, and
+restarts the gateway only when membership changes. OpenAB's
+`allowed_role_ids` setting is intentionally not used for authorization:
+upstream defines it as a role-mention trigger, while `allowed_users` is the
+actual identity gate.
 
 The implementation was verified offline (see "Offline verification" below),
 including actually building both pinned images, running fully-hardened

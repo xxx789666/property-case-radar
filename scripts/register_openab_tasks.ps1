@@ -32,3 +32,5 @@ Register-RadarTask -Name "Property Case Radar OpenAB Gateway" `
 Start-ScheduledTask -TaskName "Property Case Radar OpenAB Sidecar"
 Start-Sleep -Seconds 2
 Start-ScheduledTask -TaskName "Property Case Radar OpenAB Gateway"
+
+& (Join-Path $repoRoot "scripts\register_discord_qa_allowlist_task.ps1")

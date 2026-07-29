@@ -131,6 +131,27 @@ def test_runtime_config_accepts_a_correctly_filled_template(rc, template_text: s
     assert "${ACP_SIDECAR_PORT}" in rendered
 
 
+def test_runtime_config_overrides_static_users_from_runtime_allowlist(rc, template_text: str) -> None:
+    runtime_users = ["1488170559865884684", "843428445802725388"]
+    rendered = rc.render_config_text(
+        template_text,
+        token="fake-token-for-offline-render-test",
+        allowed_users=runtime_users,
+    )
+    parsed = tomllib.loads(rendered)
+    assert parsed["discord"]["allowed_users"] == sorted(runtime_users)
+    assert "1149306408085508106" not in parsed["discord"]["allowed_users"]
+
+
+def test_runtime_config_rejects_empty_runtime_allowlist(rc, template_text: str) -> None:
+    with pytest.raises(rc.ConfigError, match="runtime allowed-users file"):
+        rc.render_config_text(
+            template_text,
+            token="fake-token-for-offline-render-test",
+            allowed_users=[],
+        )
+
+
 def test_runtime_config_rejects_wrong_channel_set(rc, template_text: str) -> None:
     filled = _filled_template(template_text)
     bad = filled.replace("1530076529751756870", "9999999999999999999")
@@ -142,6 +163,12 @@ def test_runtime_config_rejects_allow_dm_true(rc, template_text: str) -> None:
     filled = _filled_template(template_text)
     bad = filled.replace("allow_dm = false", "allow_dm = true")
     with pytest.raises(rc.ConfigError, match="allow_dm must be explicitly false"):
+        rc.render_config_text(bad, token="fake-token-for-offline-render-test")
+
+
+def test_runtime_config_rejects_allow_all_users(rc, template_text: str) -> None:
+    bad = template_text.replace("[discord]\n", "[discord]\nallow_all_users = true\n", 1)
+    with pytest.raises(rc.ConfigError, match="allow_all_users must not be true"):
         rc.render_config_text(bad, token="fake-token-for-offline-render-test")
 
 

@@ -70,6 +70,22 @@ def test_windows_wrappers_start_restricted_pdf_broker_without_exposing_token_to_
     assert "OPENAB_DISCORD_BOT_TOKEN" not in sidecar
 
 
+def test_windows_gateway_syncs_discord_qa_role_allowlist_before_start() -> None:
+    gateway = (REPO_ROOT / "scripts" / "run_openab_gateway.ps1").read_text(encoding="utf-8")
+    runner = (REPO_ROOT / "scripts" / "run_discord_qa_allowlist_sync.ps1").read_text(
+        encoding="utf-8"
+    )
+    register = (REPO_ROOT / "scripts" / "register_discord_qa_allowlist_task.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert "sync_discord_qa_allowlist.py" in gateway
+    assert "discord-qa-allowed-users.json" in gateway
+    assert "$allowlistFile" in gateway
+    assert "--changed-exit-code 10" in runner
+    assert "Property Case Radar OpenAB Gateway" in runner
+    assert "New-TimeSpan -Minutes 5" in register
+
+
 def test_windows_tasks_start_only_openab_not_legacy_commands_bot() -> None:
     register = (REPO_ROOT / "scripts" / "register_openab_tasks.ps1").read_text(encoding="utf-8")
     assert "Property Case Radar OpenAB Gateway" in register

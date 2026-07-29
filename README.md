@@ -91,7 +91,10 @@ powershell -ExecutionPolicy Bypass -File scripts/register_openab_tasks.ps1
 ```
 
 OpenAB 僅接受私人搜尋頻道 `1530076451242508318`、`1530076529751756870`
-與設定中的使用者白名單。資料庫存取使用 `radar_agent_ro` 專用唯讀角色；
+與設定中的使用者白名單。`Property Case Radar Discord Q&A Allowlist Sync`
+每 5 分鐘檢查一次伺服器成員，自動指派 `Radar 問答` 身分組並更新實際的
+OpenAB 使用者 ID 白名單；只有名單變動才重啟 Gateway。資料庫存取使用
+`radar_agent_ro` 專用唯讀角色；
 每次查詢寫入 `logs/openab-query.jsonl`，gateway 與 sidecar 分別寫入
 `logs/openab-gateway.log`、`logs/openab-sidecar.log`。Windows 登入後由
 `Property Case Radar OpenAB Gateway` 與

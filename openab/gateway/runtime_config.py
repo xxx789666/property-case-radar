@@ -35,6 +35,7 @@ Run as ``python3 runtime_config.py TEMPLATE OUTPUT`` by
 from __future__ import annotations
 
 import os
+import json
 import sys
 import tomllib
 from pathlib import Path
@@ -55,9 +56,51 @@ class ConfigError(RuntimeError):
     pass
 
 
-def render_config_text(template: str, *, token: str | None) -> str:
+def _replace_discord_allowed_users(template: str, allowed_users: list[str]) -> str:
+    if not allowed_users or not all(
+        isinstance(user_id, str) and user_id.isdigit() for user_id in allowed_users
+    ):
+        raise ConfigError("runtime allowed-users file must contain a non-empty list of numeric IDs")
+
+    lines = template.splitlines(keepends=True)
+    in_discord = False
+    start: int | None = None
+    end: int | None = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_discord = stripped == "[discord]"
+        elif in_discord and stripped.startswith("allowed_users"):
+            if stripped != "allowed_users = [":
+                raise ConfigError("discord.allowed_users must use the expected multiline TOML form")
+            start = index
+            for candidate in range(index + 1, len(lines)):
+                if lines[candidate].strip() == "]":
+                    end = candidate
+                    break
+            break
+    if start is None or end is None:
+        raise ConfigError("discord.allowed_users block was not found")
+
+    newline = "\r\n" if "\r\n" in template else "\n"
+    replacement = [f"allowed_users = [{newline}"]
+    replacement.extend(f'  "{user_id}",{newline}' for user_id in sorted(set(allowed_users)))
+    replacement.append(f"]{newline}")
+    lines[start : end + 1] = replacement
+    return "".join(lines)
+
+
+def render_config_text(
+    template: str,
+    *,
+    token: str | None,
+    allowed_users: list[str] | None = None,
+) -> str:
     if not token or any(ch.isspace() for ch in token):
         raise ConfigError(f"{TOKEN_ENV_VAR} is missing or contains invalid whitespace")
+
+    if allowed_users is not None:
+        template = _replace_discord_allowed_users(template, allowed_users)
 
     count = template.count(TOKEN_PLACEHOLDER)
     if count != 1:
@@ -106,6 +149,8 @@ def assert_effective_routing(rendered_text: str) -> None:
 
     if discord_cfg.get("allow_dm") is not False:
         raise ConfigError("allow_dm must be explicitly false -- this bridge never accepts DMs")
+    if discord_cfg.get("allow_all_users") is True:
+        raise ConfigError("allow_all_users must not be true -- use the concrete guild-member allowlist")
 
     allowed_users = discord_cfg.get("allowed_users", [])
     if not allowed_users:
@@ -123,14 +168,24 @@ def assert_effective_routing(rendered_text: str) -> None:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
-        print("usage: runtime_config.py TEMPLATE OUTPUT", file=sys.stderr)
+    if len(argv) not in {2, 3}:
+        print("usage: runtime_config.py TEMPLATE OUTPUT [ALLOWED_USERS_JSON]", file=sys.stderr)
         return 2
-    template_path, output_path = argv
+    template_path, output_path = argv[:2]
+    allowed_users_path = Path(argv[2]) if len(argv) == 3 else None
 
     template = Path(template_path).read_text(encoding="utf-8")
     try:
-        rendered = render_config_text(template, token=os.environ.get(TOKEN_ENV_VAR))
+        allowed_users = (
+            json.loads(allowed_users_path.read_text(encoding="utf-8"))
+            if allowed_users_path
+            else None
+        )
+        rendered = render_config_text(
+            template,
+            token=os.environ.get(TOKEN_ENV_VAR),
+            allowed_users=allowed_users,
+        )
     except ConfigError as exc:
         print(f"radar-agent config: {exc}", file=sys.stderr)
         return 1
