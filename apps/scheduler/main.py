@@ -519,6 +519,7 @@ def main() -> None:
                 settings.sale_capture_script,
                 output_dir=settings.sale_capture_output_dir,
                 max_pages=settings.sale_capture_max_pages,
+                workers=settings.sale_capture_workers,
                 json_retention_days=settings.sale_capture_json_retention_days,
             )
         }

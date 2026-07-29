@@ -27,3 +27,9 @@ def test_district_labels_stop_before_non_location_filters() -> None:
         "中壢區",
         "楊梅區",
     ]
+
+
+def test_capture_defaults_to_bounded_parallel_counties() -> None:
+    args = capture.build_parser().parse_args([])
+
+    assert args.workers == 4

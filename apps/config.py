@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     sale_capture_script: Path = Path("scripts/capture_sale_results.py")
     sale_capture_output_dir: Path = Path(r"D:\網頁識別認證\sale_json")
     sale_capture_max_pages: int = Field(default=3, ge=1, le=20)
+    sale_capture_workers: int = Field(default=4, ge=1, le=8)
     sale_capture_json_retention_days: int = Field(default=30, ge=1, le=365)
     housefun_capture_enabled: bool = True
     housefun_capture_max_pages: int = Field(default=3, ge=1, le=3)

@@ -9,6 +9,7 @@ access-control page, that city is reported as failed and the run continues.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import re
 import sys
@@ -51,6 +52,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--city", choices=tuple(REGIONS), default="")
     parser.add_argument("--max-pages", type=int, default=3)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        choices=range(1, 9),
+        metavar="1-8",
+        help="number of counties captured concurrently",
+    )
     parser.add_argument("--page-delay", type=float, default=2.5)
     parser.add_argument("--timeout-ms", type=int, default=DEFAULT_TIMEOUT_MS)
     parser.add_argument("--headless", action="store_true")
@@ -442,75 +451,101 @@ def capture_land_city(
     return list(collected.values()), pages_scraped
 
 
-def capture(args: argparse.Namespace) -> Path:
+def capture_one_city(
+    city: str,
+    region_id: int,
+    args: argparse.Namespace,
+    index: int,
+    total: int,
+) -> tuple[list[dict], dict[str, object]]:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
         raise RuntimeError("playwright is required") from exc
 
+    print(f"[{index}/{total}] 擷取 591 {city} 公開出售頁面", file=sys.stderr)
+    with sync_playwright() as playwright:
+        try:
+            listings: list[dict] = []
+            sale_pages_scraped = 0
+            land_pages_scraped = 0
+            source_errors: list[str] = []
+            for attempt in range(2):
+                browser = playwright.chromium.launch(headless=args.headless)
+                try:
+                    context = browser.new_context(
+                        locale="zh-TW",
+                        timezone_id="Asia/Taipei",
+                        viewport={"width": 1440, "height": 1200},
+                    )
+                    page = context.new_page()
+                    try:
+                        sale_listings: list[dict] = []
+                        land_listings: list[dict] = []
+                        source_errors = []
+                        try:
+                            sale_listings, sale_pages_scraped = capture_city(
+                                page, city, region_id, args
+                            )
+                        except Exception as exc:
+                            source_errors.append(f"sale:{type(exc).__name__}:{exc}")
+                        try:
+                            land_listings, land_pages_scraped = capture_land_city(
+                                page, city, region_id, args
+                            )
+                        except Exception as exc:
+                            source_errors.append(f"land:{type(exc).__name__}:{exc}")
+                        listings = sale_listings + land_listings
+                    finally:
+                        context.close()
+                finally:
+                    browser.close()
+                if listings:
+                    break
+                if attempt == 0:
+                    time.sleep(args.page_delay)
+            status = (
+                "error"
+                if not listings
+                else "partial"
+                if source_errors
+                else "ok"
+            )
+            return listings, {
+                "city": city,
+                "status": status,
+                "sale_pages_scraped": sale_pages_scraped,
+                "land_pages_scraped": land_pages_scraped,
+                "listing_count": len(listings),
+                "errors": source_errors,
+            }
+        except Exception as exc:
+            return [], {"city": city, "status": "error", "error": str(exc)}
+
+
+def capture(args: argparse.Namespace) -> Path:
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    cities = {args.city: REGIONS[args.city]} if args.city else REGIONS
+    cities = list(
+        ({args.city: REGIONS[args.city]} if args.city else REGIONS).items()
+    )
     all_listings: dict[tuple[str, str], dict] = {}
     city_results: list[dict[str, object]] = []
+    tasks = [
+        (city, region_id, args, index, len(cities))
+        for index, (city, region_id) in enumerate(cities, start=1)
+    ]
 
-    with sync_playwright() as playwright:
-        for index, (city, region_id) in enumerate(cities.items(), start=1):
-            print(f"[{index}/{len(cities)}] 擷取 591 {city} 公開出售頁面", file=sys.stderr)
-            try:
-                listings: list[dict] = []
-                sale_pages_scraped = 0
-                land_pages_scraped = 0
-                source_errors: list[str] = []
-                for attempt in range(2):
-                    browser = playwright.chromium.launch(headless=args.headless)
-                    try:
-                        context = browser.new_context(
-                            locale="zh-TW",
-                            timezone_id="Asia/Taipei",
-                            viewport={"width": 1440, "height": 1200},
-                        )
-                        page = context.new_page()
-                        try:
-                            sale_listings: list[dict] = []
-                            land_listings: list[dict] = []
-                            source_errors = []
-                            try:
-                                sale_listings, sale_pages_scraped = capture_city(
-                                    page, city, region_id, args
-                                )
-                            except Exception as exc:
-                                source_errors.append(f"sale:{type(exc).__name__}:{exc}")
-                            try:
-                                land_listings, land_pages_scraped = capture_land_city(
-                                    page, city, region_id, args
-                                )
-                            except Exception as exc:
-                                source_errors.append(f"land:{type(exc).__name__}:{exc}")
-                            listings = sale_listings + land_listings
-                        finally:
-                            context.close()
-                    finally:
-                        browser.close()
-                    if listings:
-                        break
-                    if attempt == 0:
-                        time.sleep(args.page_delay)
-                for listing in listings:
-                    all_listings[(listing["source"], listing["source_property_id"])] = listing
-                city_results.append(
-                    {
-                        "city": city,
-                        "status": "ok" if listings else "error",
-                        "sale_pages_scraped": sale_pages_scraped,
-                        "land_pages_scraped": land_pages_scraped,
-                        "listing_count": len(listings),
-                        "errors": source_errors,
-                    }
-                )
-            except Exception as exc:
-                city_results.append({"city": city, "status": "error", "error": str(exc)})
-            if index < len(cities):
-                time.sleep(args.page_delay)
+    # A nationwide land run visits every public district filter. Running a
+    # small, bounded number of counties in parallel keeps the daily job well
+    # inside its one-hour watchdog while avoiding an unbounded browser burst.
+    with ThreadPoolExecutor(max_workers=min(args.workers, len(tasks))) as executor:
+        for listings, city_result in executor.map(
+            lambda values: capture_one_city(*values),
+            tasks,
+        ):
+            city_results.append(city_result)
+            for listing in listings:
+                all_listings[(listing["source"], listing["source_property_id"])] = listing
 
     captured_at = datetime.now().astimezone()
     payload = {
@@ -519,6 +554,7 @@ def capture(args: argparse.Namespace) -> Path:
         "listings": list(all_listings.values()),
         "cities": city_results,
         "successful_cities": sum(item["status"] == "ok" for item in city_results),
+        "partial_cities": sum(item["status"] == "partial" for item in city_results),
         "failed_cities": sum(item["status"] == "error" for item in city_results),
         "policy": {
             "public_pages_only": True,

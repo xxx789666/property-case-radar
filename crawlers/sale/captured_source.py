@@ -28,6 +28,7 @@ class CapturedSaleCrawler(SaleCrawler):
         *,
         output_dir: str | Path,
         max_pages: int = 3,
+        workers: int = 4,
         city: str | None = None,
         python_executable: str = sys.executable,
         timeout_seconds: float = 60 * 60,
@@ -38,12 +39,15 @@ class CapturedSaleCrawler(SaleCrawler):
         self.script_path = Path(script_path)
         self.output_dir = Path(output_dir)
         self.max_pages = max_pages
+        self.workers = workers
         self.city = city
         self.python_executable = python_executable
         self.timeout_seconds = timeout_seconds
         self.json_retention_days = json_retention_days
+        self.last_health_error: str | None = None
 
     async def fetch(self) -> list[SaleListing]:
+        self.last_health_error = None
         if not self.script_path.is_file():
             raise SaleCaptureError(f"sale capture script not found: {self.script_path}")
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -54,6 +58,8 @@ class CapturedSaleCrawler(SaleCrawler):
             str(self.output_dir),
             "--max-pages",
             str(self.max_pages),
+            "--workers",
+            str(self.workers),
             "--headless",
         ]
         if self.city:
@@ -91,6 +97,7 @@ class CapturedSaleCrawler(SaleCrawler):
         return listings
 
     def load_result(self, result_path: str | Path) -> list[SaleListing]:
+        self.last_health_error = None
         payload = json.loads(Path(result_path).read_text(encoding="utf-8"))
         policy = payload.get("policy", {})
         if (
@@ -104,10 +111,19 @@ class CapturedSaleCrawler(SaleCrawler):
         if not isinstance(raw_listings, list):
             raise SaleCaptureError("capture output has no listings array")
         if raw_listings and not any(
-            isinstance(city, dict) and city.get("status") == "ok"
+            isinstance(city, dict) and city.get("status") in {"ok", "partial"}
             for city in payload.get("cities", [])
         ):
             raise SaleCaptureError("capture output has no successful city")
+        incomplete = [
+            str(city.get("city", "unknown"))
+            for city in payload.get("cities", [])
+            if isinstance(city, dict) and city.get("status") != "ok"
+        ]
+        if incomplete:
+            self.last_health_error = (
+                "591 部分抓取失敗／待重試：" + "、".join(incomplete)
+            )
 
         listings: list[SaleListing] = []
         for raw in raw_listings:

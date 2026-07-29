@@ -20,6 +20,9 @@ class CompositeSaleCrawler(SaleCrawler):
             except Exception as error:
                 self.last_failures[name] = str(error)[:1000]
                 continue
+            health_error = getattr(source, "last_health_error", None)
+            if health_error:
+                self.last_failures[name] = str(health_error)[:1000]
             for item in items:
                 combined[(item.source, item.source_property_id)] = item
         if not combined:

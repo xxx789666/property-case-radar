@@ -52,3 +52,19 @@ def test_rejects_capture_that_claims_access_control_bypass(tmp_path) -> None:
     crawler = CapturedSaleCrawler("capture.py", output_dir=tmp_path)
     with pytest.raises(SaleCaptureError, match="public-page policy"):
         crawler.load_result(path)
+
+
+def test_partial_city_is_loaded_and_exposed_as_health_error(tmp_path) -> None:
+    payload = _payload()
+    payload["cities"] = [
+        {"city": "新竹縣", "status": "partial"},
+        {"city": "金門縣", "status": "error"},
+    ]
+    path = tmp_path / "partial.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    crawler = CapturedSaleCrawler("capture.py", output_dir=tmp_path)
+
+    listings = crawler.load_result(path)
+
+    assert len(listings) == 1
+    assert crawler.last_health_error == "591 部分抓取失敗／待重試：新竹縣、金門縣"
