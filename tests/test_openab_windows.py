@@ -13,7 +13,10 @@ def test_windows_config_uses_mention_to_thread_flow_and_local_bridge() -> None:
     parsed = tomllib.loads(WINDOWS_CONFIG.read_text(encoding="utf-8"))
     discord = parsed["discord"]
     assert set(discord["allowed_channels"]) == {"1530076451242508318", "1530076529751756870"}
-    assert discord["allowed_users"] == ["843428445802725388"]
+    assert discord["allowed_users"] == [
+        "843428445802725388",
+        "1149306408085508106",
+    ]
     assert discord["allowed_role_ids"] == ["1530137617952411779"]
     assert discord["allow_dm"] is False
     assert discord["allow_bot_messages"] == "off"
@@ -57,6 +60,8 @@ def test_windows_wrappers_start_restricted_pdf_broker_without_exposing_token_to_
     sidecar = (REPO_ROOT / "scripts" / "run_openab_sidecar.ps1").read_text(encoding="utf-8")
     assert "pdf-upload-broker.mjs" in gateway
     assert "RADAR_PDF_ALLOWED_PARENT_IDS" in gateway
+    assert "$brokerPortReleased" in gateway
+    assert "Previous PDF upload broker did not release port 18766" in gateway
     assert 'Remove-Item Env:OPENAB_DISCORD_BOT_TOKEN' in gateway
     assert 'RADAR_PDF_UPLOAD_BROKER_URL' in sidecar
     assert 'RADAR_AUCTION_DOWNLOAD_DIR' in sidecar

@@ -46,6 +46,24 @@ try {
     $env:RADAR_PDF_BROKER_LOG = $brokerLog
     $env:RADAR_PDF_BROKER_PARENT_PID = [string]$PID
     $env:RADAR_DISCORD_API_BASE_URL = "https://discord.com/api/v10"
+
+    # A scheduled-task restart can leave the previous broker alive briefly.
+    # Wait for it to release the port so its health response cannot be mistaken
+    # for readiness of the new broker process.
+    $brokerPortReleased = $false
+    for ($attempt = 0; $attempt -lt 40; $attempt++) {
+        try {
+            Invoke-RestMethod -Uri "http://127.0.0.1:18766/health" -TimeoutSec 1 | Out-Null
+            Start-Sleep -Milliseconds 250
+        } catch {
+            $brokerPortReleased = $true
+            break
+        }
+    }
+    if (-not $brokerPortReleased) {
+        throw "Previous PDF upload broker did not release port 18766"
+    }
+
     $brokerProcess = Start-Process -FilePath $nodeExe `
         -ArgumentList @($brokerScript) `
         -WindowStyle Hidden `

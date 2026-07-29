@@ -24,7 +24,10 @@ SIDECAR_DIR = OPENAB_DIR / "sidecar"
 CONFIG_TEMPLATE_PATH = GATEWAY_DIR / "config-radar-agent.toml"
 
 EXPECTED_ALLOWED_CHANNELS = {"1530076451242508318", "1530076529751756870"}
-EXPECTED_ALLOWED_USERS = ["843428445802725388"]
+EXPECTED_ALLOWED_USERS = [
+    "843428445802725388",
+    "1149306408085508106",
+]
 
 
 def _load_runtime_config_module():
@@ -108,7 +111,10 @@ def test_runtime_config_rejects_token_with_whitespace(rc, template_text: str) ->
 
 
 def test_runtime_config_rejects_empty_allowed_users(rc, template_text: str) -> None:
-    empty = template_text.replace('  "843428445802725388",\n', "")
+    empty = template_text.replace('  "843428445802725388",\n', "").replace(
+        '  "1149306408085508106",\n',
+        "",
+    )
     with pytest.raises(rc.ConfigError, match="allowed_users must be a non-empty allowlist"):
         rc.render_config_text(empty, token="fake-token-for-offline-render-test")
 

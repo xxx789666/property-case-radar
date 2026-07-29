@@ -41,11 +41,12 @@ allowed_channels = [
 # own channel scoping.
 allow_dm = false
 
-# Sole non-bot guild member verified through the bounded Discord REST
+# Approved guild members verified through the bounded Discord REST
 # bootstrap check. runtime_config.py still fails closed if this becomes
 # empty rather than silently defaulting to every channel member.
 allowed_users = [
   "843428445802725388",
+  "1149306408085508106",
 ]
 
 [agent]

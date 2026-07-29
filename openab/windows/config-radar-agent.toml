@@ -12,6 +12,7 @@ allowed_channels = [
 ]
 allowed_users = [
   "843428445802725388",
+  "1149306408085508106",
 ]
 # Discord exposes both a bot-user mention and a same-named bot-role
 # mention. Accept either so selecting @Property Case Radar cannot silently
