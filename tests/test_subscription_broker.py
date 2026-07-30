@@ -110,6 +110,7 @@ def test_rental_subscription_create_list_duplicate_and_cancel() -> None:
             "rental_type": "entire_home",
             "layout_contains": "2房",
             "features_contains": "有電梯",
+            "keywords_any": ["住辦", "店面"],
             "min_score": 80,
         }
         created = broker.execute(payload)
@@ -129,6 +130,7 @@ def test_rental_subscription_create_list_duplicate_and_cancel() -> None:
     assert created.operation == "created"
     assert created.subscription["max_monthly_rent_twd"] == 30_000
     assert created.subscription["rental_type"] == "entire_home"
+    assert created.subscription["keywords_any"] == ["住辦", "店面"]
     assert duplicate.operation == "already-exists"
     assert listed.subscriptions[0]["kind"] == "rental"
     assert cancelled.changed is True

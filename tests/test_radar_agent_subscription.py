@@ -17,6 +17,10 @@ def test_rental_subscription_payload() -> None:
             "2房",
             "--features-contains",
             "有電梯",
+            "--keyword",
+            "住辦",
+            "--keyword",
+            "店面",
             "--min-score",
             "80",
         ]
@@ -29,6 +33,7 @@ def test_rental_subscription_payload() -> None:
         "rental_type": "entire_home",
         "layout_contains": "2房",
         "features_contains": "有電梯",
+        "keywords_any": ["住辦", "店面"],
         "min_score": 80,
     }
 

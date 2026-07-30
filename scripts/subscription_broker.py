@@ -65,6 +65,31 @@ def _text(value: Any, name: str, *, maximum: int = 32) -> str | None:
     return result
 
 
+def _text_list(
+    value: Any,
+    name: str,
+    *,
+    maximum_items: int = 5,
+    maximum_item_length: int = 16,
+) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, list) or not 1 <= len(value) <= maximum_items:
+        raise RequestError(f"{name} is invalid")
+    items: list[str] = []
+    for raw in value:
+        item = str(raw).strip()
+        if (
+            not item
+            or len(item) > maximum_item_length
+            or "、" in item
+            or item in items
+        ):
+            raise RequestError(f"{name} is invalid")
+        items.append(item)
+    return "、".join(items)
+
+
 def _integer(
     value: Any, name: str, *, minimum: int = 0, maximum: int = 10**12
 ) -> int | None:
@@ -170,6 +195,9 @@ class SubscriptionBroker:
             "rental_type": item.rental_type,
             "layout_contains": item.layout_contains,
             "features_contains": item.features_contains,
+            "keywords_any": (
+                item.keywords_any.split("、") if item.keywords_any else None
+            ),
             "min_score": item.min_score,
         }
 
@@ -339,6 +367,9 @@ class SubscriptionBroker:
                 payload.get("features_contains"),
                 "features_contains",
                 maximum=64,
+            ),
+            "keywords_any": _text_list(
+                payload.get("keywords_any"), "keywords_any"
             ),
             "min_score": _integer(
                 payload.get("min_score"), "min_score", minimum=0, maximum=100

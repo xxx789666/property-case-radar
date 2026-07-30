@@ -83,7 +83,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterator
 
-from sqlalchemy import Engine, create_engine, desc, event, or_, select, text
+from sqlalchemy import Engine, create_engine, desc, event, func, or_, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, selectinload
 
@@ -655,6 +655,19 @@ def _rental_search(session: Session, args: argparse.Namespace) -> Any:
         stmt = stmt.where(RentalProperty.layout.contains(args.layout_contains))
     if args.features_contains:
         stmt = stmt.where(RentalProperty.features.contains(args.features_contains))
+    if args.keywords_any:
+        searchable = (
+            func.coalesce(RentalProperty.title, "")
+            + " "
+            + func.coalesce(RentalProperty.address, "")
+            + " "
+            + func.coalesce(RentalProperty.features, "")
+            + " "
+            + func.coalesce(RentalProperty.rental_type, "")
+        )
+        stmt = stmt.where(
+            or_(*(searchable.contains(keyword) for keyword in args.keywords_any))
+        )
     if args.min_score is not None:
         stmt = stmt.where(RentalProperty.score >= args.min_score)
     stmt = stmt.order_by(
@@ -811,6 +824,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--layout-contains", dest="layout_contains")
     p.add_argument("--features-contains", dest="features_contains")
+    p.add_argument("--keyword", dest="keywords_any", action="append")
     p.add_argument("--min-score", type=int, dest="min_score")
     p.add_argument("--limit", type=int, default=10)
     p.set_defaults(handler=_rental_search)

@@ -149,6 +149,17 @@ def _auction_matches(case: AuctionCase, sub: AuctionSubscription) -> bool:
 
 
 def _rental_matches(item: RentalProperty, sub: RentalSubscription) -> bool:
+    searchable = " ".join(
+        value
+        for value in (
+            item.title,
+            item.address,
+            item.features,
+            item.rental_type,
+        )
+        if value
+    )
+    keywords = sub.keywords_any.split("、") if sub.keywords_any else ()
     return (
         item.status == "active"
         and item.city == sub.city
@@ -183,6 +194,7 @@ def _rental_matches(item: RentalProperty, sub: RentalSubscription) -> bool:
                 and sub.features_contains in item.features
             )
         )
+        and (not keywords or any(keyword in searchable for keyword in keywords))
         and (
             sub.min_score is None
             or (item.score is not None and item.score >= sub.min_score)

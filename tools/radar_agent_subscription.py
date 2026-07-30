@@ -57,6 +57,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     rental.add_argument("--layout-contains", dest="layout_contains")
     rental.add_argument("--features-contains", dest="features_contains")
+    rental.add_argument("--keyword", dest="keywords_any", action="append")
     rental.add_argument("--min-score", type=int, dest="min_score")
     sub.add_parser("list")
     cancel = sub.add_parser("cancel")

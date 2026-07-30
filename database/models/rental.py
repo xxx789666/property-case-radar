@@ -69,6 +69,7 @@ class RentalSubscription(Base, TimestampMixin):
     rental_type: Mapped[str | None] = mapped_column(String(32))
     layout_contains: Mapped[str | None] = mapped_column(String(32))
     features_contains: Mapped[str | None] = mapped_column(String(64))
+    keywords_any: Mapped[str | None] = mapped_column(String(128))
     min_score: Mapped[int | None] = mapped_column()
     channel_id: Mapped[int | None] = mapped_column(BigInteger)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
