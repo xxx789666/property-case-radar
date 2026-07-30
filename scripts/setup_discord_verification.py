@@ -265,6 +265,41 @@ def lock_categories(
         )
 
 
+def lock_child_channels(
+    api: DiscordApi,
+    channels: list[dict[str, Any]],
+    role_id: str,
+    verification_channel_id: str,
+) -> int:
+    locked = 0
+    for channel in channels:
+        if channel.get("type") not in {0, 2}:
+            continue
+        if str(channel["id"]) == verification_channel_id:
+            continue
+        bot_allow = VIEW_CHANNEL | (SEND_MESSAGES if channel.get("type") == 0 else 0)
+        put_overwrite(
+            api,
+            channel,
+            BOT_ROLE_ID,
+            allow_bits=bot_allow,
+        )
+        put_overwrite(
+            api,
+            channel,
+            role_id,
+            allow_bits=VIEW_CHANNEL,
+        )
+        put_overwrite(
+            api,
+            channel,
+            GUILD_ID,
+            deny_bits=VIEW_CHANNEL,
+        )
+        locked += 1
+    return locked
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--token-file", type=Path, required=True)
@@ -290,6 +325,13 @@ def main() -> int:
     )
     channels = api.request("GET", f"/guilds/{GUILD_ID}/channels")
     lock_categories(api, channels, role_id)
+    channels = api.request("GET", f"/guilds/{GUILD_ID}/channels")
+    locked_channel_count = lock_child_channels(
+        api,
+        channels,
+        role_id,
+        str(channel["id"]),
+    )
     print(
         json.dumps(
             {
@@ -298,6 +340,7 @@ def main() -> int:
                 "channel_id": str(channel["id"]),
                 "message_id": message_id,
                 "locked_category_count": len(LOCKED_CATEGORY_IDS),
+                "locked_channel_count": locked_channel_count,
             },
             ensure_ascii=False,
         )
