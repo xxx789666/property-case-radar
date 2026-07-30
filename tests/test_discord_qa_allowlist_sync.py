@@ -18,9 +18,6 @@ def load_module():
 
 
 class FakeApi:
-    def __init__(self) -> None:
-        self.assigned: list[str] = []
-
     def request(self, method: str, path: str, payload=None):
         if method == "GET" and path.endswith("/roles"):
             return [{"id": "role-1", "name": "Radar 問答", "managed": False}]
@@ -30,13 +27,10 @@ class FakeApi:
                 {"user": {"id": "100", "bot": False}, "roles": ["role-1"]},
                 {"user": {"id": "300", "bot": True}, "roles": []},
             ]
-        if method == "PUT" and "/roles/role-1" in path:
-            self.assigned.append(path.split("/members/")[1].split("/")[0])
-            return None
         raise AssertionError((method, path, payload))
 
 
-def test_sync_assigns_humans_and_writes_sorted_allowlist(tmp_path: Path) -> None:
+def test_sync_includes_only_verified_role_members(tmp_path: Path) -> None:
     module = load_module()
     api = FakeApi()
     role_id_file = tmp_path / "role-id"
@@ -50,11 +44,10 @@ def test_sync_assigns_humans_and_writes_sorted_allowlist(tmp_path: Path) -> None
         allowlist_file=allowlist_file,
     )
 
-    assert result["member_count"] == 2
-    assert result["assigned_count"] == 1
+    assert result["member_count"] == 1
+    assert result["verified_member_count"] == 1
     assert result["allowlist_changed"] is True
-    assert api.assigned == ["200"]
-    assert json.loads(allowlist_file.read_text(encoding="utf-8")) == ["100", "200"]
+    assert json.loads(allowlist_file.read_text(encoding="utf-8")) == ["100"]
     assert role_id_file.read_text(encoding="ascii").strip() == "role-1"
 
 

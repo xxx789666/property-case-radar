@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assign the Radar Q&A role and build OpenAB's concrete user allowlist."""
+"""Build OpenAB's user allowlist from verified Radar Q&A role members."""
 
 from __future__ import annotations
 
@@ -132,27 +132,20 @@ def sync(
 ) -> dict[str, Any]:
     role_id = ensure_role(api, guild_id, role_name, role_id_file)
     members = list_all_members(api, guild_id)
-    humans = [member for member in members if not member.get("user", {}).get("bot")]
-
-    assigned: list[str] = []
-    for member in humans:
-        user_id = str(member["user"]["id"])
-        if role_id in {str(item) for item in member.get("roles", [])}:
-            continue
-        api.request(
-            "PUT",
-            f"/guilds/{guild_id}/members/{user_id}/roles/{role_id}",
-        )
-        assigned.append(user_id)
-
-    allowed_users = sorted(str(member["user"]["id"]) for member in humans)
+    verified_members = [
+        member
+        for member in members
+        if not member.get("user", {}).get("bot")
+        and role_id in {str(item) for item in member.get("roles", [])}
+    ]
+    allowed_users = sorted(str(member["user"]["id"]) for member in verified_members)
     allowlist_changed = atomic_write_allowlist(allowlist_file, allowed_users)
     return {
         "ok": True,
         "guild_id": guild_id,
         "role_id": role_id,
         "member_count": len(allowed_users),
-        "assigned_count": len(assigned),
+        "verified_member_count": len(allowed_users),
         "allowlist_changed": allowlist_changed,
     }
 
