@@ -12,7 +12,11 @@ WINDOWS_CONFIG = REPO_ROOT / "openab" / "windows" / "config-radar-agent.toml"
 def test_windows_config_uses_mention_to_thread_flow_and_local_bridge() -> None:
     parsed = tomllib.loads(WINDOWS_CONFIG.read_text(encoding="utf-8"))
     discord = parsed["discord"]
-    assert set(discord["allowed_channels"]) == {"1530076451242508318", "1530076529751756870"}
+    assert set(discord["allowed_channels"]) == {
+        "1530076451242508318",
+        "1530076529751756870",
+        "1532282082854830202",
+    }
     assert discord["allowed_users"] == [
         "843428445802725388",
         "1149306408085508106",
@@ -43,6 +47,8 @@ def test_agent_contract_forbids_direct_database_and_intermediate_answers() -> No
     assert "Do not retry" in contract
     assert "type_a_building_land" in contract
     assert "type_d_building_land" in contract
+    assert "rental-search" in contract
+    assert "1532282082854830202" in contract
 
 
 def test_agent_contract_uses_actual_case_type_official_url_and_original_pdf() -> None:

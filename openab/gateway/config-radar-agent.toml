@@ -25,18 +25,19 @@
 [discord]
 bot_token = "${OPENAB_DISCORD_BOT_TOKEN}"
 
-# Fixed to exactly the two private "搜尋" channels from `discord 伺服器.txt`
+# Fixed to exactly the three private search channels
 # -- the same channels apps/discord_bot/main.py's RadarBot already scopes
 # /house and /auction search to (CLAUDE.md treats these IDs as
 # environment-specific configuration, not secrets, so they are hardcoded
 # here rather than templated). runtime_config.py refuses to start OpenAB if
-# the effective allowed_channels ever differs from this exact pair.
+# the effective allowed_channels ever differs from this exact set.
 allowed_channels = [
   "1530076451242508318",  # 房地案件-搜尋 (private)
   "1530076529751756870",  # 法拍案件-搜尋 (private)
+  "1532282082854830202",  # 租房案件-搜尋 (private)
 ]
 
-# Never accept DMs -- this bridge only ever operates inside the two search
+# Never accept DMs -- this bridge only ever operates inside the three search
 # channels above, matching the deterministic /house and /auction commands'
 # own channel scoping.
 allow_dm = false
@@ -67,7 +68,7 @@ working_dir = "/workspace/radar-agent"
 env = { ACP_SIDECAR_HOST = "${ACP_SIDECAR_HOST}", ACP_SIDECAR_PORT = "${ACP_SIDECAR_PORT}" }
 
 [pool]
-# One session at a time: this is a low-traffic, two-channel Q&A surface,
+# One session at a time: this is a low-traffic, three-channel Q&A surface,
 # not a high-concurrency service -- keep the blast radius of any single
 # runaway/looping session small and easy to reason about.
 max_sessions = 1

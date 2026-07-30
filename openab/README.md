@@ -211,17 +211,16 @@ bot.
 
 ## Channels
 
-Fixed to exactly the two **private** channels from `discord 伺服器.txt`
-(same channels the deterministic bot already scopes `/house search` and
-`/auction search` to):
+Fixed to exactly the three **private** search channels:
 
 | Channel | ID |
 |---|---|
 | 房地案件-搜尋 | `1530076451242508318` |
 | 法拍案件-搜尋 | `1530076529751756870` |
+| 租房案件-搜尋 | `1532282082854830202` |
 
 `runtime_config.py` refuses to start OpenAB if the rendered config's
-`allowed_channels` differs from this exact pair -- `allow_dm` must also be
+`allowed_channels` differs from this exact set -- `allow_dm` must also be
 `false`, and `allowed_users` must be non-empty.
 
 ## Least privilege
@@ -341,7 +340,7 @@ handled by anything in this repository or its automation):
    Channels, Read Message History, Send Messages, Send Messages in
    Threads, Add Reactions.
 2. Invite the bot to the guild (`1530072733818556538`) with access to only
-   the two private search channels above.
+   the three private search channels above.
 3. Create the Discord token secret file (see "Secrets" above).
 4. Create the dedicated read-only Postgres role and its secret file
    **without ever writing the password to a file or shell history**:
@@ -377,7 +376,7 @@ handled by anything in this repository or its automation):
 
 7. `docker compose --profile openab up -d openab-sidecar openab-gateway`,
    then `docker logs openab-gateway --tail 50` and confirm
-   `allow_all_channels=false`, `channels=2`, `allow_dm=false`, and no
+   `allow_all_channels=false`, `channels=3`, `allow_dm=false`, and no
    token in the log; `docker logs openab-sidecar --tail 50` and confirm no
    database credential in the log.
 8. Only after the above: the live smoke test below.

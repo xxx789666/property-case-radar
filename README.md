@@ -98,7 +98,8 @@ powershell -ExecutionPolicy Bypass -File scripts/install_openab_windows.ps1
 powershell -ExecutionPolicy Bypass -File scripts/register_openab_tasks.ps1
 ```
 
-OpenAB 僅接受私人搜尋頻道 `1530076451242508318`、`1530076529751756870`
+OpenAB 僅接受私人搜尋頻道 `1530076451242508318`、`1530076529751756870`、
+`1532282082854830202`
 與設定中的使用者白名單。`Property Case Radar Discord Q&A Allowlist Sync`
 每 5 分鐘檢查一次伺服器成員，只把已完成驗證並持有 `Radar 問答` 身分組的
 成員同步到 OpenAB 使用者 ID 白名單。新成員起初只能看到 `#驗證`，閱讀規則
@@ -114,6 +115,9 @@ OpenAB 僅接受私人搜尋頻道 `1530076451242508318`、`1530076529751756870`
 `@Property Case Radar 幫我查詢桃園中壢區 1500 萬以內案件`。Agent 會固定轉成
 `house-search --city 桃園市 --district 中壢區 --max-total-price-twd 15000000`
 的唯讀資料庫查詢。
+租屋查詢請在 `1532282082854830202` 標記 Bot，例如：
+`@Property Case Radar 幫我查詢桃園市中壢區每月 3 萬元以內的兩房租屋`。
+Agent 會使用獨立的 `rental-search` 唯讀查詢，不會混用出售案件。
 同一入口也支援公開土地資料；「土地／農地／建地」會分別轉成
 `--property-type land / farmland / building_land`，並以土地坪數及土地單價呈現。
 建地搜尋涵蓋住宅用地、商業用地、工業用地、住宅區、商業區、工業區，以及

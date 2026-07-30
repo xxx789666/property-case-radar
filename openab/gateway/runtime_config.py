@@ -44,12 +44,18 @@ TOKEN_PLACEHOLDER = '"${OPENAB_DISCORD_BOT_TOKEN}"'
 TOKEN_ENV_VAR = "OPENAB_DISCORD_BOT_TOKEN"
 
 # Fixed by discord 伺服器.txt (CLAUDE.md: treat these as environment-specific
-# configuration, not secrets) -- the same two private "搜尋" channels
+# configuration, not secrets) -- the same three private search channels
 # apps/discord_bot/main.py's RadarBot already scopes /house and /auction
 # search to. Never sourced from an env var: an env var could be misconfigured
 # at deploy time and silently widen the allowlist to a public/broadcast
 # channel, defeating the whole point of pinning this in code.
-EXPECTED_ALLOWED_CHANNELS = frozenset({"1530076451242508318", "1530076529751756870"})
+EXPECTED_ALLOWED_CHANNELS = frozenset(
+    {
+        "1530076451242508318",
+        "1530076529751756870",
+        "1532282082854830202",
+    }
+)
 
 
 class ConfigError(RuntimeError):
@@ -157,7 +163,7 @@ def assert_effective_routing(rendered_text: str) -> None:
         raise ConfigError(
             "allowed_users must be a non-empty allowlist before this service can start "
             "-- fill it in from the guild's actual member list (see openab/README.md); "
-            "an empty list would let every member of the two search channels use the "
+            "an empty list would let every member of the three search channels use the "
             "agent, which is not a deliberate least-privilege choice this template makes for you"
         )
     if not all(isinstance(u, str) and u.isdigit() for u in allowed_users):

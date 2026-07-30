@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from database.models.auction import AuctionCase, AuctionRound
 from database.models.sale import Property
+from database.models.rental import RentalProperty
 from tools.radar_agent_query import (
     MAX_LIMIT,
     FailClosed,
@@ -851,6 +852,62 @@ class TestHandlersAgainstARealSession:
                 )
                 subtype = subtype_args.handler(session, subtype_args)
                 assert [row["usage"] for row in subtype] == [usage]
+
+    def test_rental_search_latest_and_detail(self, session_factory) -> None:
+        with session_factory() as session:
+            item = RentalProperty(
+                source="591-rent",
+                source_property_id="rent-1",
+                url="https://rent.591.com.tw/12345678",
+                title="近捷運兩房",
+                city="桃園市",
+                district="中壢區",
+                address="中正路",
+                monthly_rent_twd=25_000,
+                rent_per_ping_twd=1_000,
+                area_ping=Decimal("25"),
+                layout="2房1廳",
+                rental_type="整層住家",
+                features="可開伙、有電梯",
+                score=85,
+                status="active",
+            )
+            session.add(item)
+            session.commit()
+
+            parser = _build_parser()
+            args = parser.parse_args(
+                [
+                    "rental-search",
+                    "--city",
+                    "桃園市",
+                    "--district",
+                    "中壢區",
+                    "--max-monthly-rent-twd",
+                    "30000",
+                    "--rental-type",
+                    "entire_home",
+                    "--layout-contains",
+                    "2房",
+                    "--features-contains",
+                    "有電梯",
+                    "--min-score",
+                    "80",
+                ]
+            )
+            results = args.handler(session, args)
+            assert len(results) == 1
+            assert results[0]["source_property_id"] == "rent-1"
+            assert results[0]["monthly_rent_twd"] == 25_000
+
+            args = parser.parse_args(["rental-latest", "--limit", "5"])
+            assert len(args.handler(session, args)) == 1
+
+            args = parser.parse_args(["rental-detail", "--id", str(item.id)])
+            assert args.handler(session, args)["id"] == item.id
+
+            args = parser.parse_args(["rental-detail", "--id", "999999"])
+            assert isinstance(args.handler(session, args), ToolError)
 
     def test_auction_search_latest_schedule_detail(self, session_factory, sample_case: AuctionCase) -> None:
         with session_factory() as session:

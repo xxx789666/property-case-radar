@@ -15,7 +15,8 @@ Read-only is enforced at the OS/database boundary, not just by what this
 module happens to call:
 
 - Every code path here only issues ``select()`` statements against the ORM
-  *models* directly (``AuctionCase``/``Property``/``MarketPrice``) -- the
+  *models* directly (``AuctionCase``/``Property``/``RentalProperty``/
+  ``MarketPrice``) -- the
   write-capable ``database.repositories`` classes (``upsert_listing``,
   ``add``, ``SubscriptionRepository.create``/``deactivate``, etc.) and the
   ``crawlers`` package they depend on are not even present in this
@@ -88,6 +89,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from database.models.auction import ACTIVE_STATUSES, CASE_TYPE_LABELS, AuctionCase, CaseType
 from database.models.common import MarketPrice
+from database.models.rental import RentalProperty
 from database.models.sale import Property
 from notifications.auction_masking import display_debtor_owner
 
@@ -264,6 +266,32 @@ def _audit_arguments(args: argparse.Namespace) -> dict[str, Any]:
         key: value
         for key, value in vars(args).items()
         if key not in {"handler", "command"} and value is not None
+    }
+
+
+def _serialize_rental(item: RentalProperty) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "source_property_id": item.source_property_id,
+        "title": item.title,
+        "city": item.city,
+        "district": item.district,
+        "address": item.address,
+        "monthly_rent_twd": item.monthly_rent_twd,
+        "rent_per_ping_twd": item.rent_per_ping_twd,
+        "area_ping": _num(item.area_ping),
+        "layout": item.layout,
+        "floor": item.floor,
+        "total_floors": item.total_floors,
+        "rental_type": item.rental_type,
+        "landlord_type": item.landlord_type,
+        "features": item.features,
+        "district_median_rent_per_ping_twd": item.district_median_rent_per_ping_twd,
+        "discount_rate": _num(item.discount_rate),
+        "score": item.score,
+        "status": item.status,
+        "source": item.source,
+        "url": item.url,
     }
 
 
@@ -591,6 +619,71 @@ def _house_detail(session: Session, args: argparse.Namespace) -> Any:
     return _serialize_property(item)
 
 
+RENTAL_TYPE_VALUES = {
+    "entire_home": "整層住家",
+    "independent_suite": "獨立套房",
+    "shared_suite": "分租套房",
+    "room": "雅房",
+    "parking": "車位",
+    "other": "其他",
+}
+
+
+def _rental_search(session: Session, args: argparse.Namespace) -> Any:
+    stmt = select(RentalProperty).where(RentalProperty.status == "active")
+    if args.city:
+        stmt = stmt.where(RentalProperty.city == args.city)
+    if args.district:
+        stmt = stmt.where(RentalProperty.district == args.district)
+    if args.max_monthly_rent_twd is not None:
+        stmt = stmt.where(
+            RentalProperty.monthly_rent_twd <= args.max_monthly_rent_twd
+        )
+    if args.min_area_ping is not None:
+        stmt = stmt.where(
+            RentalProperty.area_ping >= Decimal(str(args.min_area_ping))
+        )
+    if args.max_area_ping is not None:
+        stmt = stmt.where(
+            RentalProperty.area_ping <= Decimal(str(args.max_area_ping))
+        )
+    if args.rental_type:
+        stmt = stmt.where(
+            RentalProperty.rental_type == RENTAL_TYPE_VALUES[args.rental_type]
+        )
+    if args.layout_contains:
+        stmt = stmt.where(RentalProperty.layout.contains(args.layout_contains))
+    if args.features_contains:
+        stmt = stmt.where(RentalProperty.features.contains(args.features_contains))
+    if args.min_score is not None:
+        stmt = stmt.where(RentalProperty.score >= args.min_score)
+    stmt = stmt.order_by(
+        desc(RentalProperty.score).nullslast(),
+        RentalProperty.monthly_rent_twd,
+        desc(RentalProperty.first_seen_at),
+    ).limit(_clamp_limit(args.limit))
+    return [_serialize_rental(item) for item in session.scalars(stmt)]
+
+
+def _rental_latest(session: Session, args: argparse.Namespace) -> Any:
+    stmt = (
+        select(RentalProperty)
+        .where(RentalProperty.status == "active")
+        .order_by(desc(RentalProperty.first_seen_at))
+        .limit(_clamp_limit(args.limit))
+    )
+    return [_serialize_rental(item) for item in session.scalars(stmt)]
+
+
+def _rental_detail(session: Session, args: argparse.Namespace) -> Any:
+    item = session.scalar(
+        select(RentalProperty).where(RentalProperty.id == args.id)
+    )
+    if item is None:
+        return ToolError(error=f"no rental found with id={args.id}")
+    return _serialize_rental(item)
+
+
 def _auction_search(session: Session, args: argparse.Namespace) -> Any:
     stmt = select(AuctionCase).options(*_EAGER_LOAD)
     if args.city:
@@ -702,6 +795,33 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("house-detail", help="One listing by database id")
     p.add_argument("--id", type=int, required=True)
     p.set_defaults(handler=_house_detail)
+
+    p = sub.add_parser("rental-search", help="Search active rental listings")
+    p.add_argument("--city")
+    p.add_argument("--district")
+    p.add_argument(
+        "--max-monthly-rent-twd", type=int, dest="max_monthly_rent_twd"
+    )
+    p.add_argument("--min-area-ping", type=float, dest="min_area_ping")
+    p.add_argument("--max-area-ping", type=float, dest="max_area_ping")
+    p.add_argument(
+        "--rental-type",
+        choices=tuple(RENTAL_TYPE_VALUES),
+        dest="rental_type",
+    )
+    p.add_argument("--layout-contains", dest="layout_contains")
+    p.add_argument("--features-contains", dest="features_contains")
+    p.add_argument("--min-score", type=int, dest="min_score")
+    p.add_argument("--limit", type=int, default=10)
+    p.set_defaults(handler=_rental_search)
+
+    p = sub.add_parser("rental-latest", help="Most recently discovered rentals")
+    p.add_argument("--limit", type=int, default=10)
+    p.set_defaults(handler=_rental_latest)
+
+    p = sub.add_parser("rental-detail", help="One rental by database id")
+    p.add_argument("--id", type=int, required=True)
+    p.set_defaults(handler=_rental_detail)
 
     p = sub.add_parser("auction-search", help="Search auction cases (法拍屋案件)")
     p.add_argument("--city")

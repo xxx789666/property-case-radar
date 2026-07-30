@@ -40,6 +40,9 @@ python -X utf8 -m tools.radar_agent_subscription <subcommand> [options]
 | `house-search` | Search active listings and land | `--city --district --max-total-price-twd --min-building-area-ping --max-age-years --min-discount-rate --property-type --limit` |
 | `house-latest` | Latest listings | `--limit` |
 | `house-detail` | Listing by id | `--id` |
+| `rental-search` | Search active rental listings | `--city --district --max-monthly-rent-twd --min-area-ping --max-area-ping --rental-type --layout-contains --features-contains --min-score --limit` |
+| `rental-latest` | Latest rental listings | `--limit` |
+| `rental-detail` | Rental listing by id | `--id` |
 | `auction-search` | Search auction cases | `--city --district --case-type {residential,storefront,land,office_factory,other} --max-floor-price-twd --min-round --deliverable {true,false} --min-investment-score --limit` |
 | `auction-latest` | Latest auction cases | `--limit` |
 | `auction-schedule` | Cases auctioning within N days | `--within-days` |
@@ -50,6 +53,18 @@ python -X utf8 -m tools.radar_agent_subscription <subcommand> [options]
 ## 一般售屋查詢固定規則
 
 - 頻道 `1530076451242508318` 是一般售屋問答搜尋入口。
+- 頻道 `1532282082854830202` 是租房案件問答搜尋入口。租屋問題只能使用
+  `rental-search`、`rental-latest` 或 `rental-detail`，不可改用
+  `house-search`，因為出售與出租是不同資料表。
+- 租屋預算「每月 3 萬元以內」使用
+  `--max-monthly-rent-twd 30000`；坪數用 `--min-area-ping`／
+  `--max-area-ping`；房型文字如「2房」使用 `--layout-contains 2房`。
+- 出租類型對應：整層住家 `entire_home`、獨立套房
+  `independent_suite`、分租套房 `shared_suite`、雅房 `room`、
+  車位 `parking`、其他 `other`。
+- 設備條件如「有電梯」「可開伙」「可養寵物」使用
+  `--features-contains`。一次只能精確傳入一個設備文字；多條件時先使用
+  最重要條件查詢，再從回傳的 `features` 如實篩選，不得臆造。
 - 使用者提到「桃園中壢區」時，查詢參數正規化為
   `--city 桃園市 --district 中壢區`。
 - 「1500 萬以內／以下／已內」正規化為

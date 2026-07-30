@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     discord_rental_new_channel_id: int = 1532276339405492304
     discord_rental_price_drop_channel_id: int = 1532277198663319674
     discord_rental_high_score_channel_id: int = 1532277201045684356
+    discord_rental_search_channel_id: int = 1532282082854830202
     rental_scheduler_daily_hour: int = Field(default=11, ge=0, le=23)
     rental_scheduler_daily_minute: int = Field(default=0, ge=0, le=59)
     rental_capture_enabled: bool = True
