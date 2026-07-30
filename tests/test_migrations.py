@@ -55,6 +55,11 @@ _EXPECTED_AUCTION_TABLES = {
     "auction_subscriptions",
 }
 
+_EXPECTED_RENTAL_TABLES = {
+    "rental_properties",
+    "rental_price_history",
+}
+
 _OUTBOX_ONLY_COLUMNS = {"status_history_id", "delivery_key", "status", "attempt_count", "last_error"}
 _PRE_OUTBOX_ONLY_COLUMNS = {"sent_at"}
 
@@ -84,12 +89,13 @@ def _table_names(url: str) -> set[str]:
         engine.dispose()
 
 
-def test_base_metadata_contains_all_sale_and_auction_tables() -> None:
+def test_base_metadata_contains_all_sale_auction_and_rental_tables() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     tables = set(inspect(engine).get_table_names())
     assert _EXPECTED_SALE_TABLES <= tables
     assert _EXPECTED_AUCTION_TABLES <= tables
+    assert _EXPECTED_RENTAL_TABLES <= tables
     engine.dispose()
 
 
@@ -138,7 +144,9 @@ def test_upgrade_head_adds_auction_tables_on_top_of_0001(tmp_path) -> None:
     url = _sqlite_url(tmp_path / "head.db")
     result = _run_alembic("upgrade", "head", database_url=url)
     assert result.returncode == 0, result.stderr
-    assert _table_names(url) == _EXPECTED_SALE_TABLES | _EXPECTED_AUCTION_TABLES
+    assert _table_names(url) == (
+        _EXPECTED_SALE_TABLES | _EXPECTED_AUCTION_TABLES | _EXPECTED_RENTAL_TABLES
+    )
 
     engine = create_engine(url)
     try:
@@ -206,7 +214,9 @@ def test_full_downgrade_then_upgrade_round_trip_is_stable(tmp_path) -> None:
 
     result = _run_alembic("upgrade", "head", database_url=url)
     assert result.returncode == 0, result.stderr
-    assert _table_names(url) == _EXPECTED_SALE_TABLES | _EXPECTED_AUCTION_TABLES
+    assert _table_names(url) == (
+        _EXPECTED_SALE_TABLES | _EXPECTED_AUCTION_TABLES | _EXPECTED_RENTAL_TABLES
+    )
 
 
 def test_migrated_schema_matches_live_orm_models_exactly(tmp_path) -> None:

@@ -44,6 +44,17 @@ def test_production_sale_job_defaults_to_fixed_1200_taipei_schedule() -> None:
     assert str(sale_job.trigger) == "cron[hour='12', minute='0']"
 
 
+def test_production_rental_job_defaults_to_fixed_1100_taipei_schedule() -> None:
+    scheduler = build_production_scheduler(
+        lambda: None,
+        24,
+        rental_job=lambda: None,
+    )
+    rental_job = scheduler.get_job("rental-crawler")
+    assert rental_job is not None
+    assert str(rental_job.trigger) == "cron[hour='11', minute='0']"
+
+
 def test_scheduler_compose_service_is_separate_hardened_and_secret_scoped() -> None:
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     service = _service_block(compose, "scheduler")

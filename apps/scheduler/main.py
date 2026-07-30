@@ -18,6 +18,10 @@ from apps.services.sale_notifier import live_sale_notifier
 from apps.services.sale_pipeline import ingest_sale_listings, rescore_sale_inventory
 from apps.services.sale_daily_summary import deliver_daily_sale_summary
 from apps.services.sale_status_lifecycle import reconcile_stale_sale_listings
+from apps.services.rental_daily_summary import deliver_daily_rental_summary
+from apps.services.rental_notifier import live_rental_notifier
+from apps.services.rental_pipeline import ingest_rental_listings
+from apps.services.rental_status_lifecycle import reconcile_stale_rental_listings
 from apps.services.system_alerts import update_system_alert
 from apps.services.subscription_notifications import (
     deliver_pending_subscription_notifications,
@@ -34,6 +38,12 @@ from crawlers.sale.captured_status import (
 )
 from crawlers.sale.composite import CompositeSaleCrawler
 from crawlers.sale.housefun_source import HousefunSaleCrawler, HousefunStatusVerifier
+from crawlers.rental.captured_source import CapturedRentalCrawler
+from crawlers.rental.captured_status import (
+    CapturedRentalStatusVerifier,
+    RentalStatusVerificationError,
+)
+from database.models.rental import RentalProperty
 from database.models.sale import Property
 from database.session import create_db_engine, create_session_factory
 from notifications.auction_notification import AuctionNotificationRouter
@@ -105,6 +115,7 @@ def build_production_scheduler(
     market_interval_hours: int,
     *,
     sale_job: Callable[[], None] | None = None,
+    rental_job: Callable[[], None] | None = None,
     sale_interval_minutes: int = 1440,
     auction_job: Callable[[], None] | None = None,
     auction_interval_hours: int = 24,
@@ -112,6 +123,8 @@ def build_production_scheduler(
     daily_minute: int = 0,
     sale_daily_hour: int = 12,
     sale_daily_minute: int = 0,
+    rental_daily_hour: int = 11,
+    rental_daily_minute: int = 0,
 ) -> BlockingScheduler:
     """Build the official-data production scheduler at fixed Taipei times.
 
@@ -128,6 +141,17 @@ def build_production_scheduler(
             hour=sale_daily_hour,
             minute=sale_daily_minute,
             id="sale-crawler",
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+        )
+    if rental_job is not None:
+        scheduler.add_job(
+            rental_job,
+            "cron",
+            hour=rental_daily_hour,
+            minute=rental_daily_minute,
+            id="rental-crawler",
             max_instances=1,
             coalesce=True,
             replace_existing=True,
@@ -245,6 +269,63 @@ def make_live_sale_job(
         asyncio.run(run_sale_cycle())
 
     return run_sale_job
+
+
+def make_live_rental_job(
+    factory: sessionmaker[Session],
+    crawler: CapturedRentalCrawler,
+    settings: Settings,
+    status_verifier: CapturedRentalStatusVerifier | None = None,
+) -> Callable[[], None]:
+    async def run_rental_cycle() -> None:
+        with factory() as session:
+            existing_source_count = session.scalar(
+                select(func.count())
+                .select_from(RentalProperty)
+                .where(RentalProperty.source == "591-rent")
+            ) or 0
+            baseline = existing_source_count == 0
+            async with live_rental_notifier(settings) as notifier:
+                result = await ingest_rental_listings(
+                    crawler,
+                    session,
+                    notifier=notifier if not baseline else None,
+                    notify_new=False,
+                    backfill=baseline,
+                )
+                if notifier is not None and not baseline:
+                    summary = await deliver_daily_rental_summary(
+                        session,
+                        notifier.new_channel,
+                        settings.discord_rental_new_channel_id,
+                    )
+                    logger.info("rental daily summary delivery finished: %s", summary)
+            if status_verifier is not None:
+                try:
+                    status_result = await reconcile_stale_rental_listings(
+                        session,
+                        status_verifier,
+                        missing_days=settings.rental_status_missing_days,
+                        limit=settings.rental_status_verify_limit,
+                    )
+                    logger.info(
+                        "rental status reconciliation finished: %s", status_result
+                    )
+                except RentalStatusVerificationError:
+                    logger.exception("rental status reconciliation failed safely")
+            update_system_alert(
+                settings,
+                key="rental-source:591",
+                failing=crawler.last_health_error is not None,
+                title="租屋來源 591",
+                detail=crawler.last_health_error or "抓取正常",
+            )
+            logger.info("rental crawl finished: %s baseline=%s", result, baseline)
+
+    def run_rental_job() -> None:
+        asyncio.run(run_rental_cycle())
+
+    return run_rental_job
 
 
 def make_market_sync_job(
@@ -542,6 +623,21 @@ def main() -> None:
             CapturedSaleStatusVerifier(settings.sale_capture_script),
             additional_status_verifiers,
         )
+    rental_job: Callable[[], None] | None = None
+    if settings.rental_capture_enabled:
+        rental_crawler = CapturedRentalCrawler(
+            settings.rental_capture_script,
+            output_dir=settings.rental_capture_output_dir,
+            max_pages=settings.rental_capture_max_pages,
+            workers=settings.rental_capture_workers,
+            json_retention_days=settings.rental_capture_json_retention_days,
+        )
+        rental_job = make_live_rental_job(
+            factory,
+            rental_crawler,
+            settings,
+            CapturedRentalStatusVerifier(settings.rental_capture_script),
+        )
     auction_job: Callable[[], None] | None = None
     if settings.auction_capture_enabled:
         auction_source = CapturedAuctionAnnouncementSource(
@@ -565,6 +661,7 @@ def main() -> None:
         make_market_sync_job(factory, market_source),
         settings.market_sync_interval_hours,
         sale_job=sale_job,
+        rental_job=rental_job,
         sale_interval_minutes=settings.sale_crawl_interval_minutes,
         auction_job=auction_job,
         auction_interval_hours=settings.auction_crawl_interval_hours,
@@ -572,18 +669,25 @@ def main() -> None:
         daily_minute=settings.scheduler_daily_minute,
         sale_daily_hour=settings.sale_scheduler_daily_hour,
         sale_daily_minute=settings.sale_scheduler_daily_minute,
+        rental_daily_hour=settings.rental_scheduler_daily_hour,
+        rental_daily_minute=settings.rental_scheduler_daily_minute,
     )
     attach_failure_alerts(scheduler, settings)
     logger.info(
         "scheduler started; market source=official MOI current sales Open Data; "
-        "sale capture=%s script=%s; auction capture=%s script=%s; "
-        "sale schedule=%02d:%02d; market/auction schedule=%02d:%02d Asia/Taipei",
+        "sale capture=%s script=%s; rental capture=%s script=%s; "
+        "auction capture=%s script=%s; sale schedule=%02d:%02d; "
+        "rental schedule=%02d:%02d; market/auction schedule=%02d:%02d Asia/Taipei",
         "enabled" if sale_job is not None else "disabled",
         settings.sale_capture_script,
+        "enabled" if rental_job is not None else "disabled",
+        settings.rental_capture_script,
         "enabled" if auction_job is not None else "disabled",
         settings.auction_capture_script,
         settings.sale_scheduler_daily_hour,
         settings.sale_scheduler_daily_minute,
+        settings.rental_scheduler_daily_hour,
+        settings.rental_scheduler_daily_minute,
         settings.scheduler_daily_hour,
         settings.scheduler_daily_minute,
     )

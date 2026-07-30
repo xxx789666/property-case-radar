@@ -16,6 +16,20 @@ class Settings(BaseSettings):
     discord_sale_price_drop_channel_id: int = 1530075359490609202
     discord_sale_high_score_channel_id: int = 1530075382873587855
     discord_sale_search_channel_id: int = 1530076451242508318
+    discord_rental_new_channel_id: int = 1532276339405492304
+    discord_rental_price_drop_channel_id: int = 1532277198663319674
+    discord_rental_high_score_channel_id: int = 1532277201045684356
+    rental_scheduler_daily_hour: int = Field(default=11, ge=0, le=23)
+    rental_scheduler_daily_minute: int = Field(default=0, ge=0, le=59)
+    rental_capture_enabled: bool = True
+    rental_capture_script: Path = Path("scripts/capture_rental_results.py")
+    rental_capture_output_dir: Path = Path(r"D:\網頁識別認證\rental_json")
+    rental_capture_max_pages: int = Field(default=3, ge=1, le=20)
+    rental_capture_workers: int = Field(default=4, ge=1, le=8)
+    rental_capture_json_retention_days: int = Field(default=30, ge=1, le=365)
+    rental_high_score_threshold: int = Field(default=80, ge=0, le=100)
+    rental_status_missing_days: int = Field(default=3, ge=1, le=30)
+    rental_status_verify_limit: int = Field(default=500, ge=1, le=2000)
     discord_system_alert_channel_id: int = 1530072733818556541
     sale_scheduler_daily_hour: int = Field(default=12, ge=0, le=23)
     sale_scheduler_daily_minute: int = Field(default=0, ge=0, le=59)
