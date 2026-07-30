@@ -58,6 +58,8 @@ def test_agent_contract_uses_actual_case_type_official_url_and_original_pdf() ->
     assert "查看拍賣公告：[官方網址]" in contract
     assert "法院原始 PDF：" in contract
     assert "python -X utf8 -m tools.radar_agent_pdf upload" in contract
+    assert "[檔名](message_url)" in contract
+    assert "一至五筆" in contract
     assert "禁止建立、渲染或提供摘要 PDF" in contract
 
 

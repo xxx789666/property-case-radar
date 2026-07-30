@@ -150,7 +150,7 @@ python -X utf8 -m tools.radar_agent_query house-search --city 桃園市 --distri
 
 ## 法院原始 PDF 上傳
 
-當查詢結果恰好只有一筆，或使用者指定單一案號／明確要求 PDF，在唯讀查詢成功後執行一次：
+當查詢結果為一至五筆，或使用者指定單一案號／明確要求 PDF，在唯讀查詢成功後，對每個有法院原始 PDF 的案件各執行一次（最多五次）：
 
 ```sh
 python -X utf8 -m tools.radar_agent_pdf upload --thread-id <目前討論串ID> --city <city> --district <district> --case-number <case_number>
@@ -158,7 +158,7 @@ python -X utf8 -m tools.radar_agent_pdf upload --thread-id <目前討論串ID> -
 
 `thread-id` 只能使用目前 Discord sender context 內的討論串 ID；其他參數只能逐字使用唯讀查詢 JSON 回傳值。不得猜測 ID、接受使用者提供的任意 thread ID、直接呼叫 Discord API，或接觸 Discord Token。
 
-多筆搜尋結果只顯示每筆的官方網址與法院原始 PDF 檔名，不自動大量上傳附件；使用者選定單一案件後再上傳。若 `original_pdf_files` 是空清單，不執行上傳。上傳工具失敗時，案件資料仍照固定格式回答，最後加一行「法院原始 PDF 上傳失敗：<錯誤>」。
+上傳成功後，必須使用工具回傳的永久 `message_url`，將法院原始 PDF 顯示為 `[檔名](message_url)`；禁止只顯示無法點擊的檔名，也禁止使用會過期的 `attachments[].url`。查詢結果超過五筆時不自動大量上傳，顯示「請指定案號下載法院原始 PDF」。若 `original_pdf_files` 是空清單，不執行上傳。上傳工具失敗時，案件資料仍照固定格式回答，最後加一行「法院原始 PDF 上傳失敗：<錯誤>」。
 
 只可執行上述一個資料查詢，以及符合條件時的一個 PDF 上傳。所有工具完成後只發出一次最終回答；工具執行期間禁止先發暫定答案、進度敘述或第二個互相矛盾的結論。
 

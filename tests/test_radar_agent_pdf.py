@@ -24,7 +24,18 @@ class _BrokerHandler(BaseHTTPRequestHandler):
         length = int(self.headers["Content-Length"])
         type(self).received = json.loads(self.rfile.read(length).decode("utf-8"))
         body = json.dumps(
-            {"ok": True, "message_id": "123", "filenames": ["1050100025324_1_1.pdf"]}
+            {
+                "ok": True,
+                "message_id": "123",
+                "message_url": "https://discord.com/channels/1/2/123",
+                "filenames": ["1050100025324_1_1.pdf"],
+                "attachments": [
+                    {
+                        "filename": "1050100025324_1_1.pdf",
+                        "url": "https://cdn.discord.test/1050100025324_1_1.pdf",
+                    }
+                ],
+            }
         ).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -41,7 +52,11 @@ class _DiscordHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         body = json.dumps(
-            {"id": "1531235755677188116", "parent_id": "1530076529751756870"}
+            {
+                "id": "1531235755677188116",
+                "parent_id": "1530076529751756870",
+                "guild_id": "1530072733818556538",
+            }
         ).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -51,7 +66,17 @@ class _DiscordHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         type(self).upload_body = self.rfile.read(int(self.headers["Content-Length"]))
-        body = json.dumps({"id": "1531240484385591447"}).encode()
+        body = json.dumps(
+            {
+                "id": "1531240484385591447",
+                "attachments": [
+                    {
+                        "filename": "1050100025324_1_1.pdf",
+                        "url": "https://cdn.discord.test/1050100025324_1_1.pdf",
+                    }
+                ],
+            }
+        ).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -174,6 +199,16 @@ def test_node_broker_uploads_only_matching_original_pdf(tmp_path: Path) -> None:
         with urllib.request.urlopen(request, timeout=5) as response:
             result = json.loads(response.read().decode())
         assert result["filenames"] == ["1050100025324_1_1.pdf"]
+        assert result["message_url"] == (
+            "https://discord.com/channels/1530072733818556538/"
+            "1531235755677188116/1531240484385591447"
+        )
+        assert result["attachments"] == [
+            {
+                "filename": "1050100025324_1_1.pdf",
+                "url": "https://cdn.discord.test/1050100025324_1_1.pdf",
+            }
+        ]
         assert b"1050100025324_1_1.pdf" in _DiscordHandler.upload_body
         assert "案件詳細資料.pdf".encode() not in _DiscordHandler.upload_body
     finally:

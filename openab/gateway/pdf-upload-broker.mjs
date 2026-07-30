@@ -143,6 +143,7 @@ async function verifyAllowedThread(threadId) {
   if (!parentId || !ALLOWED_PARENT_IDS.has(String(parentId))) {
     throw new Error("指定頻道不屬於允許的法拍案件頻道");
   }
+  return channel;
 }
 
 async function uploadPdfs(threadId, files, caseNumber) {
@@ -201,7 +202,7 @@ async function handleUpload(request, response) {
   }
 
   try {
-    await verifyAllowedThread(threadId);
+    const channel = await verifyAllowedThread(threadId);
     const files = findOriginalPdfs({ city, district, case_number: caseNumber });
     if (files.length === 0) {
       sendJson(response, 404, { error: "找不到法院原始 PDF" });
@@ -217,7 +218,16 @@ async function handleUpload(request, response) {
     sendJson(response, 200, {
       ok: true,
       message_id: message?.id || null,
+      message_url: (
+        channel?.guild_id && message?.id
+          ? `https://discord.com/channels/${channel.guild_id}/${threadId}/${message.id}`
+          : null
+      ),
       filenames: files.map((file) => file.filename),
+      attachments: (message?.attachments || []).map((attachment) => ({
+        filename: attachment.filename,
+        url: attachment.url,
+      })),
     });
   } catch (err) {
     audit("upload_failed", {
