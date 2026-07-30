@@ -181,6 +181,7 @@ class SubscriptionBroker:
             "id": item.id,
             "city": item.city,
             "district": item.district,
+            "min_monthly_rent_twd": item.min_monthly_rent_twd,
             "max_monthly_rent_twd": item.max_monthly_rent_twd,
             "min_area_ping": (
                 float(item.min_area_ping)
@@ -348,15 +349,26 @@ class SubscriptionBroker:
         )
         if min_area is not None and max_area is not None and min_area > max_area:
             raise RequestError("min_area_ping must not exceed max_area_ping")
+        min_rent = _integer(
+            payload.get("min_monthly_rent_twd"),
+            "min_monthly_rent_twd",
+            minimum=1,
+        )
+        max_rent = _integer(
+            payload.get("max_monthly_rent_twd"),
+            "max_monthly_rent_twd",
+            minimum=1,
+        )
+        if min_rent is not None and max_rent is not None and min_rent > max_rent:
+            raise RequestError(
+                "min_monthly_rent_twd must not exceed max_monthly_rent_twd"
+            )
         values = {
             "discord_user_id": ALLOWED_USER_ID,
             "city": _text(payload.get("city"), "city"),
             "district": _text(payload.get("district"), "district"),
-            "max_monthly_rent_twd": _integer(
-                payload.get("max_monthly_rent_twd"),
-                "max_monthly_rent_twd",
-                minimum=1,
-            ),
+            "min_monthly_rent_twd": min_rent,
+            "max_monthly_rent_twd": max_rent,
             "min_area_ping": min_area,
             "max_area_ping": max_area,
             "rental_type": rental_type,

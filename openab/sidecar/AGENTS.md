@@ -41,7 +41,7 @@ python -X utf8 -m tools.radar_agent_subscription <subcommand> [options]
 | `house-search` | Search active listings and land | `--city --district --max-total-price-twd --min-building-area-ping --max-age-years --min-discount-rate --property-type --limit` |
 | `house-latest` | Latest listings | `--limit` |
 | `house-detail` | Listing by id | `--id` |
-| `rental-search` | Search active rental listings | `--city --district --max-monthly-rent-twd --min-area-ping --max-area-ping --rental-type --layout-contains --features-contains --keyword --min-score --limit` |
+| `rental-search` | Search active rental listings | `--city --district --min-monthly-rent-twd --max-monthly-rent-twd --min-area-ping --max-area-ping --rental-type --layout-contains --features-contains --keyword --min-score --limit` |
 | `rental-latest` | Latest rental listings | `--limit` |
 | `rental-detail` | Rental listing by id | `--id` |
 | `auction-search` | Search auction cases | `--city --district --case-type {residential,storefront,land,office_factory,other} --max-floor-price-twd --min-round --deliverable {true,false} --min-investment-score --limit` |
@@ -58,15 +58,17 @@ python -X utf8 -m tools.radar_agent_subscription <subcommand> [options]
   `rental-search`、`rental-latest` 或 `rental-detail`，不可改用
   `house-search`，因為出售與出租是不同資料表。
 - 租屋預算「每月 3 萬元以內」使用
-  `--max-monthly-rent-twd 30000`；坪數用 `--min-area-ping`／
+  `--max-monthly-rent-twd 30000`；「3 萬至 5 萬」必須同時使用
+  `--min-monthly-rent-twd 30000 --max-monthly-rent-twd 50000`，不可省略
+  最低租金。坪數用 `--min-area-ping`／
   `--max-area-ping`；房型文字如「2房」使用 `--layout-contains 2房`。
 - 出租類型對應：整層住家 `entire_home`、獨立套房
   `independent_suite`、分租套房 `shared_suite`、雅房 `room`、
   車位 `parking`、其他 `other`。
-- 「住辦」「店面」不是 `other` 的同義詞，也不是可靠的 591 出租類型。
-  使用者說「住辦、店面」時，不得傳 `--rental-type other`；應傳
-  `--keyword 住辦 --keyword 店面`，採任一關鍵字符合（OR），搜尋標題、
-  地址、設備與來源出租類型。「其他」只有在使用者明確說其他類型時才用。
+- 591 將多數「住辦」「店面」刊登歸在「其他」出租類型，標題不一定包含
+  住辦或店面。使用者查詢「住辦」「店面」時，傳
+  `--rental-type other`，不要只使用 `--keyword`，避免漏掉 591 已歸類但
+  標題未寫用途的案件。回覆時應註明「其他」也可能包含其他非住宅用途。
 - 設備條件如「有電梯」「可開伙」「可養寵物」使用
   `--features-contains`。一次只能精確傳入一個設備文字；多條件時先使用
   最重要條件查詢，再從回傳的 `features` 如實篩選，不得臆造。

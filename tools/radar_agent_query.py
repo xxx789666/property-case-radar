@@ -635,6 +635,10 @@ def _rental_search(session: Session, args: argparse.Namespace) -> Any:
         stmt = stmt.where(RentalProperty.city == args.city)
     if args.district:
         stmt = stmt.where(RentalProperty.district == args.district)
+    if args.min_monthly_rent_twd is not None:
+        stmt = stmt.where(
+            RentalProperty.monthly_rent_twd >= args.min_monthly_rent_twd
+        )
     if args.max_monthly_rent_twd is not None:
         stmt = stmt.where(
             RentalProperty.monthly_rent_twd <= args.max_monthly_rent_twd
@@ -812,6 +816,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("rental-search", help="Search active rental listings")
     p.add_argument("--city")
     p.add_argument("--district")
+    p.add_argument(
+        "--min-monthly-rent-twd", type=int, dest="min_monthly_rent_twd"
+    )
     p.add_argument(
         "--max-monthly-rent-twd", type=int, dest="max_monthly_rent_twd"
     )

@@ -883,6 +883,8 @@ class TestHandlersAgainstARealSession:
                     "桃園市",
                     "--district",
                     "中壢區",
+                    "--min-monthly-rent-twd",
+                    "20000",
                     "--max-monthly-rent-twd",
                     "30000",
                     "--rental-type",

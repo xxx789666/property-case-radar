@@ -39,6 +39,9 @@ def _parser() -> argparse.ArgumentParser:
     rental.add_argument("--city", required=True)
     rental.add_argument("--district")
     rental.add_argument(
+        "--min-monthly-rent-twd", type=int, dest="min_monthly_rent_twd"
+    )
+    rental.add_argument(
         "--max-monthly-rent-twd", type=int, dest="max_monthly_rent_twd"
     )
     rental.add_argument("--min-area-ping", type=float, dest="min_area_ping")

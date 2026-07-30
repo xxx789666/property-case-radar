@@ -63,6 +63,7 @@ class RentalSubscription(Base, TimestampMixin):
     discord_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
     city: Mapped[str] = mapped_column(String(32))
     district: Mapped[str | None] = mapped_column(String(32))
+    min_monthly_rent_twd: Mapped[int | None] = mapped_column(BigInteger)
     max_monthly_rent_twd: Mapped[int | None] = mapped_column(BigInteger)
     min_area_ping: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     max_area_ping: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))

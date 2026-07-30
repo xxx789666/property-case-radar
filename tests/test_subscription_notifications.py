@@ -101,6 +101,7 @@ async def test_rental_subscription_match_is_durable_deduplicated_and_delivered(
             discord_user_id=123456789,
             city="桃園市",
             district="中壢區",
+            min_monthly_rent_twd=20_000,
             max_monthly_rent_twd=30_000,
             min_area_ping=Decimal("20"),
             rental_type="entire_home",
@@ -131,6 +132,12 @@ async def test_rental_subscription_match_is_durable_deduplicated_and_delivered(
         session.flush()
 
         assert _rental_matches(item, subscription) is True
+        item.monthly_rent_twd = 19_999
+        assert _rental_matches(item, subscription) is False
+        item.monthly_rent_twd = 25_000
+        item.area_ping = Decimal("19.99")
+        assert _rental_matches(item, subscription) is False
+        item.area_ping = Decimal("25")
         assert queue_rental_subscription_matches(session, item) == 1
         assert queue_rental_subscription_matches(session, item) == 0
         session.commit()

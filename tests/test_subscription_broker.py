@@ -105,6 +105,7 @@ def test_rental_subscription_create_list_duplicate_and_cancel() -> None:
             "operation": "rental-create",
             "city": "桃園市",
             "district": "中壢區",
+            "min_monthly_rent_twd": 20_000,
             "max_monthly_rent_twd": 30_000,
             "min_area_ping": 20,
             "rental_type": "entire_home",
@@ -128,6 +129,7 @@ def test_rental_subscription_create_list_duplicate_and_cancel() -> None:
         broker.engine.dispose()
 
     assert created.operation == "created"
+    assert created.subscription["min_monthly_rent_twd"] == 20_000
     assert created.subscription["max_monthly_rent_twd"] == 30_000
     assert created.subscription["rental_type"] == "entire_home"
     assert created.subscription["keywords_any"] == ["住辦", "店面"]

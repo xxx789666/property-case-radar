@@ -43,7 +43,7 @@ from crawlers.rental.captured_status import (
     CapturedRentalStatusVerifier,
     RentalStatusVerificationError,
 )
-from database.models.rental import RentalProperty
+from database.models.rental import RentalProperty, RentalSubscription
 from database.models.sale import Property
 from database.session import create_db_engine, create_session_factory
 from notifications.auction_notification import AuctionNotificationRouter
@@ -189,6 +189,26 @@ def make_live_sale_job(
 ) -> Callable[[], None]:
     async def run_sale_cycle() -> None:
         with factory() as session:
+            focus_districts = list(
+                session.execute(
+                    select(
+                        RentalSubscription.city,
+                        RentalSubscription.district,
+                    )
+                    .where(
+                        RentalSubscription.active.is_(True),
+                        RentalSubscription.district.is_not(None),
+                    )
+                    .distinct()
+                ).tuples()
+            )
+            crawler.set_focus_districts(
+                [
+                    (city, district)
+                    for city, district in focus_districts
+                    if district is not None
+                ]
+            )
             existing_source_count = session.scalar(
                 select(func.count())
                 .select_from(Property)
@@ -302,15 +322,19 @@ def make_live_rental_job(
                     logger.info("rental daily summary delivery finished: %s", summary)
             if status_verifier is not None:
                 try:
-                    status_result = await reconcile_stale_rental_listings(
-                        session,
-                        status_verifier,
-                        missing_days=settings.rental_status_missing_days,
-                        limit=settings.rental_status_verify_limit,
-                    )
-                    logger.info(
-                        "rental status reconciliation finished: %s", status_result
-                    )
+                    for source in ("591-rent", "591-business"):
+                        status_result = await reconcile_stale_rental_listings(
+                            session,
+                            status_verifier,
+                            missing_days=settings.rental_status_missing_days,
+                            limit=settings.rental_status_verify_limit,
+                            source=source,
+                        )
+                        logger.info(
+                            "rental status reconciliation finished: source=%s %s",
+                            source,
+                            status_result,
+                        )
                 except RentalStatusVerificationError:
                     logger.exception("rental status reconciliation failed safely")
             update_system_alert(
@@ -629,6 +653,8 @@ def main() -> None:
             settings.rental_capture_script,
             output_dir=settings.rental_capture_output_dir,
             max_pages=settings.rental_capture_max_pages,
+            other_max_pages=settings.rental_capture_other_max_pages,
+            focus_max_pages=settings.rental_capture_focus_max_pages,
             workers=settings.rental_capture_workers,
             json_retention_days=settings.rental_capture_json_retention_days,
         )

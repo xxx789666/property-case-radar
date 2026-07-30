@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     rental_capture_script: Path = Path("scripts/capture_rental_results.py")
     rental_capture_output_dir: Path = Path(r"D:\網頁識別認證\rental_json")
     rental_capture_max_pages: int = Field(default=3, ge=1, le=20)
+    rental_capture_other_max_pages: int = Field(default=10, ge=1, le=20)
+    rental_capture_focus_max_pages: int = Field(default=10, ge=1, le=20)
     rental_capture_workers: int = Field(default=4, ge=1, le=8)
     rental_capture_json_retention_days: int = Field(default=30, ge=1, le=365)
     rental_high_score_threshold: int = Field(default=80, ge=0, le=100)

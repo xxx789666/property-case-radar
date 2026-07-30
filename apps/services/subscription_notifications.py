@@ -165,6 +165,10 @@ def _rental_matches(item: RentalProperty, sub: RentalSubscription) -> bool:
         and item.city == sub.city
         and (sub.district is None or item.district == sub.district)
         and (
+            sub.min_monthly_rent_twd is None
+            or item.monthly_rent_twd >= sub.min_monthly_rent_twd
+        )
+        and (
             sub.max_monthly_rent_twd is None
             or item.monthly_rent_twd <= sub.max_monthly_rent_twd
         )
