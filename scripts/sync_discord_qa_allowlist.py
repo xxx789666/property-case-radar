@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
@@ -71,6 +72,31 @@ def list_all_members(api: DiscordApi, guild_id: str) -> list[dict[str, Any]]:
         after = str(page[-1]["user"]["id"])
 
 
+def list_reaction_users(
+    api: DiscordApi,
+    channel_id: str,
+    message_id: str,
+    emoji: str = "✅",
+) -> set[str]:
+    user_ids: set[str] = set()
+    after: str | None = None
+    encoded_emoji = quote(emoji, safe="")
+    while True:
+        path = (
+            f"/channels/{channel_id}/messages/{message_id}/reactions/"
+            f"{encoded_emoji}?limit=100"
+        )
+        if after:
+            path += f"&after={after}"
+        page = api.request("GET", path)
+        if not isinstance(page, list):
+            raise DiscordApiError("Discord reaction-user response was not a list")
+        user_ids.update(str(user["id"]) for user in page if not user.get("bot"))
+        if len(page) < 100:
+            return user_ids
+        after = str(page[-1]["id"])
+
+
 def ensure_role(api: DiscordApi, guild_id: str, role_name: str, role_id_file: Path) -> str:
     roles = api.request("GET", f"/guilds/{guild_id}/roles")
     if not isinstance(roles, list):
@@ -129,14 +155,45 @@ def sync(
     role_name: str,
     role_id_file: Path,
     allowlist_file: Path,
+    verification_channel_id_file: Path | None = None,
+    verification_message_id_file: Path | None = None,
 ) -> dict[str, Any]:
     role_id = ensure_role(api, guild_id, role_name, role_id_file)
     members = list_all_members(api, guild_id)
+    newly_verified: set[str] = set()
+
+    if (
+        verification_channel_id_file
+        and verification_message_id_file
+        and verification_channel_id_file.exists()
+        and verification_message_id_file.exists()
+    ):
+        channel_id = verification_channel_id_file.read_text(encoding="ascii").strip()
+        message_id = verification_message_id_file.read_text(encoding="ascii").strip()
+        reacted_user_ids = list_reaction_users(api, channel_id, message_id)
+        for member in members:
+            user = member.get("user", {})
+            user_id = str(user.get("id", ""))
+            member_roles = {str(item) for item in member.get("roles", [])}
+            if (
+                not user.get("bot")
+                and user_id in reacted_user_ids
+                and role_id not in member_roles
+            ):
+                api.request(
+                    "PUT",
+                    f"/guilds/{guild_id}/members/{user_id}/roles/{role_id}",
+                )
+                newly_verified.add(user_id)
+
     verified_members = [
         member
         for member in members
         if not member.get("user", {}).get("bot")
-        and role_id in {str(item) for item in member.get("roles", [])}
+        and (
+            role_id in {str(item) for item in member.get("roles", [])}
+            or str(member["user"]["id"]) in newly_verified
+        )
     ]
     allowed_users = sorted(str(member["user"]["id"]) for member in verified_members)
     allowlist_changed = atomic_write_allowlist(allowlist_file, allowed_users)
@@ -146,6 +203,7 @@ def sync(
         "role_id": role_id,
         "member_count": len(allowed_users),
         "verified_member_count": len(allowed_users),
+        "newly_verified_count": len(newly_verified),
         "allowlist_changed": allowlist_changed,
     }
 
@@ -157,6 +215,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allowlist-file", type=Path, required=True)
     parser.add_argument("--guild-id", default=DEFAULT_GUILD_ID)
     parser.add_argument("--role-name", default=DEFAULT_ROLE_NAME)
+    parser.add_argument("--verification-channel-id-file", type=Path)
+    parser.add_argument("--verification-message-id-file", type=Path)
     parser.add_argument("--changed-exit-code", type=int, default=0)
     return parser.parse_args()
 
@@ -172,6 +232,8 @@ def main() -> int:
         role_name=args.role_name,
         role_id_file=args.role_id_file,
         allowlist_file=args.allowlist_file,
+        verification_channel_id_file=args.verification_channel_id_file,
+        verification_message_id_file=args.verification_message_id_file,
     )
     print(json.dumps(result, ensure_ascii=False))
     if result["allowlist_changed"] and args.changed_exit_code:

@@ -82,6 +82,8 @@ def test_windows_gateway_syncs_discord_qa_role_allowlist_before_start() -> None:
     assert "discord-qa-allowed-users.json" in gateway
     assert "$allowlistFile" in gateway
     assert "--changed-exit-code 10" in runner
+    assert "--verification-channel-id-file" in runner
+    assert "--verification-message-id-file" in runner
     assert "Property Case Radar OpenAB Gateway" in runner
     assert "New-TimeSpan -Minutes 5" in register
 

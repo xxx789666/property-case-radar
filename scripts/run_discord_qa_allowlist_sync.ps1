@@ -6,6 +6,8 @@ $localDir = Join-Path $repoRoot "openab\.local"
 $logDir = Join-Path $repoRoot "logs"
 $tokenSecret = Join-Path $localDir "openab_discord_bot_token"
 $roleIdFile = Join-Path $localDir "discord_qa_role_id"
+$verificationChannelIdFile = Join-Path $localDir "discord_verification_channel_id"
+$verificationMessageIdFile = Join-Path $localDir "discord_verification_message_id"
 $allowlistFile = Join-Path $runtimeDir "discord-qa-allowed-users.json"
 $syncScript = Join-Path $repoRoot "scripts\sync_discord_qa_allowlist.py"
 $logFile = Join-Path $logDir "discord-qa-allowlist-sync.log"
@@ -16,6 +18,8 @@ $output = & python -X utf8 $syncScript `
     --token-file $tokenSecret `
     --role-id-file $roleIdFile `
     --allowlist-file $allowlistFile `
+    --verification-channel-id-file $verificationChannelIdFile `
+    --verification-message-id-file $verificationMessageIdFile `
     --changed-exit-code 10 2>&1
 $syncExitCode = $LASTEXITCODE
 "$(Get-Date -Format o) $output" | Add-Content -LiteralPath $logFile -Encoding utf8

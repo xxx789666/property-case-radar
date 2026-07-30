@@ -41,8 +41,10 @@ holds the Discord token but never `DATABASE_URL`; the sidecar reads the
 dedicated `radar_agent_ro` URL and passes it only to each ACP child.
 The allowlist sync writes only verified members who already hold the
 `Radar 問答` role to the gitignored runtime allowlist, and restarts the
-gateway only when role membership changes. It never grants the verification
-role itself. OpenAB's
+gateway only when role membership changes. New members initially see only
+`#驗證`; reacting with ✅ to the verification message grants the role
+on the next five-minute sync and unlocks the remaining channel categories.
+OpenAB's
 `allowed_role_ids` setting is intentionally not used for authorization:
 upstream defines it as a role-mention trigger, while `allowed_users` is the
 actual identity gate.
