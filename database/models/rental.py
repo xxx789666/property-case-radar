@@ -54,3 +54,21 @@ class RentalPriceHistory(Base):
     rent_per_ping_twd: Mapped[int] = mapped_column(BigInteger)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     rental: Mapped[RentalProperty] = relationship(back_populates="price_history")
+
+
+class RentalSubscription(Base, TimestampMixin):
+    __tablename__ = "rental_subscriptions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    discord_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    city: Mapped[str] = mapped_column(String(32))
+    district: Mapped[str | None] = mapped_column(String(32))
+    max_monthly_rent_twd: Mapped[int | None] = mapped_column(BigInteger)
+    min_area_ping: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    max_area_ping: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    rental_type: Mapped[str | None] = mapped_column(String(32))
+    layout_contains: Mapped[str | None] = mapped_column(String(32))
+    features_contains: Mapped[str | None] = mapped_column(String(64))
+    min_score: Mapped[int | None] = mapped_column()
+    channel_id: Mapped[int | None] = mapped_column(BigInteger)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)

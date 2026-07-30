@@ -18,9 +18,19 @@ from database.models.auction import (
 from database.models.base import utcnow
 from database.models.common import NotificationLog
 from database.models.sale import Property, PropertySubscription
+from database.models.rental import RentalProperty, RentalSubscription
+from notifications.rental_notification import build_rental_notification
 from notifications.sale_notification import build_sale_notification
 
 MAX_ATTEMPTS = 5
+RENTAL_TYPE_VALUES = {
+    "entire_home": "整層住家",
+    "independent_suite": "獨立套房",
+    "shared_suite": "分租套房",
+    "room": "雅房",
+    "parking": "車位",
+    "other": "其他",
+}
 
 
 class SubscriptionChannel(Protocol):
@@ -138,6 +148,48 @@ def _auction_matches(case: AuctionCase, sub: AuctionSubscription) -> bool:
     )
 
 
+def _rental_matches(item: RentalProperty, sub: RentalSubscription) -> bool:
+    return (
+        item.status == "active"
+        and item.city == sub.city
+        and (sub.district is None or item.district == sub.district)
+        and (
+            sub.max_monthly_rent_twd is None
+            or item.monthly_rent_twd <= sub.max_monthly_rent_twd
+        )
+        and (
+            sub.min_area_ping is None
+            or item.area_ping >= sub.min_area_ping
+        )
+        and (
+            sub.max_area_ping is None
+            or item.area_ping <= sub.max_area_ping
+        )
+        and (
+            sub.rental_type is None
+            or item.rental_type == RENTAL_TYPE_VALUES.get(sub.rental_type)
+        )
+        and (
+            sub.layout_contains is None
+            or (
+                item.layout is not None
+                and sub.layout_contains in item.layout
+            )
+        )
+        and (
+            sub.features_contains is None
+            or (
+                item.features is not None
+                and sub.features_contains in item.features
+            )
+        )
+        and (
+            sub.min_score is None
+            or (item.score is not None and item.score >= sub.min_score)
+        )
+    )
+
+
 def _queue(
     session: Session,
     *,
@@ -146,8 +198,15 @@ def _queue(
     channel_id: int,
     property_id: int | None = None,
     auction_case_id: int | None = None,
+    rental_property_id: int | None = None,
 ) -> int:
-    object_id = property_id if property_id is not None else auction_case_id
+    object_id = (
+        property_id
+        if property_id is not None
+        else auction_case_id
+        if auction_case_id is not None
+        else rental_property_id
+    )
     key = f"subscription:{kind}:{subscription_id}:{object_id}"
     if session.scalar(
         select(NotificationLog.id).where(NotificationLog.delivery_key == key)
@@ -157,6 +216,7 @@ def _queue(
         NotificationLog(
             property_id=property_id,
             auction_case_id=auction_case_id,
+            rental_property_id=rental_property_id,
             channel_id=channel_id,
             kind=f"subscription:{kind}:{subscription_id}",
             delivery_key=key,
@@ -201,6 +261,26 @@ def queue_auction_subscription_matches(session: Session, case: AuctionCase) -> i
     )
 
 
+def queue_rental_subscription_matches(
+    session: Session, item: RentalProperty
+) -> int:
+    session.flush()
+    subscriptions = session.scalars(
+        select(RentalSubscription).where(RentalSubscription.active.is_(True))
+    ).all()
+    return sum(
+        _queue(
+            session,
+            kind="rental",
+            subscription_id=sub.id,
+            channel_id=sub.channel_id,
+            rental_property_id=item.id,
+        )
+        for sub in subscriptions
+        if sub.channel_id is not None and _rental_matches(item, sub)
+    )
+
+
 @dataclass(frozen=True)
 class SubscriptionDeliveryReport:
     attempted: int = 0
@@ -222,7 +302,9 @@ async def deliver_pending_subscription_notifications(
     attempted = delivered = failed = 0
     for row in rows:
         attempted += 1
-        match = re.fullmatch(r"subscription:(sale|auction):(\d+)", row.kind)
+        match = re.fullmatch(
+            r"subscription:(sale|auction|rental):(\d+)", row.kind
+        )
         if match is None or row.channel_id is None:
             row.status = "failed"
             row.last_error = "invalid subscription outbox row"
@@ -244,7 +326,7 @@ async def deliver_pending_subscription_notifications(
                     url=note.url,
                     color=discord.Color.blue(),
                 )
-        else:
+        elif kind == "auction":
             subscription = session.get(AuctionSubscription, subscription_id)
             item = session.get(AuctionCase, row.auction_case_id)
             active = subscription is not None and subscription.active and item is not None
@@ -267,6 +349,22 @@ async def deliver_pending_subscription_notifications(
                     title="🔔 訂閱符合｜法拍案件",
                     description="\n".join(lines),
                     url=item.announcement_url or None,
+                    color=discord.Color.blue(),
+                )
+        else:
+            subscription = session.get(RentalSubscription, subscription_id)
+            item = session.get(RentalProperty, row.rental_property_id)
+            active = (
+                subscription is not None
+                and subscription.active
+                and item is not None
+            )
+            if active:
+                note = build_rental_notification(item, kind="new")
+                embed = discord.Embed(
+                    title="🔔 訂閱符合：新租屋",
+                    description=note.description,
+                    url=note.url,
                     color=discord.Color.blue(),
                 )
         if not active:

@@ -19,6 +19,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 from apps.config import get_settings
 from database.models.auction import AuctionSubscription, CaseType
 from database.models.sale import PropertySubscription
+from database.models.rental import RentalSubscription
 from database.session import create_db_engine, create_session_factory
 
 HOST = "127.0.0.1"
@@ -40,6 +41,14 @@ PROPERTY_TYPES = {
     "forest_land",
     "hillside_land",
     "road_land",
+}
+RENTAL_TYPES = {
+    "entire_home",
+    "independent_suite",
+    "shared_suite",
+    "room",
+    "parking",
+    "other",
 }
 
 
@@ -140,6 +149,30 @@ class SubscriptionBroker:
             ),
         }
 
+    @staticmethod
+    def _rental_json(item: RentalSubscription) -> dict[str, Any]:
+        return {
+            "kind": "rental",
+            "id": item.id,
+            "city": item.city,
+            "district": item.district,
+            "max_monthly_rent_twd": item.max_monthly_rent_twd,
+            "min_area_ping": (
+                float(item.min_area_ping)
+                if item.min_area_ping is not None
+                else None
+            ),
+            "max_area_ping": (
+                float(item.max_area_ping)
+                if item.max_area_ping is not None
+                else None
+            ),
+            "rental_type": item.rental_type,
+            "layout_contains": item.layout_contains,
+            "features_contains": item.features_contains,
+            "min_score": item.min_score,
+        }
+
     def execute(self, payload: dict[str, Any]) -> BrokerResult:
         operation = payload.get("operation")
         with self.factory() as session:
@@ -156,11 +189,18 @@ class SubscriptionBroker:
                         AuctionSubscription.active.is_(True),
                     )
                 ).all()
+                rentals = session.scalars(
+                    select(RentalSubscription).where(
+                        RentalSubscription.discord_user_id == ALLOWED_USER_ID,
+                        RentalSubscription.active.is_(True),
+                    )
+                ).all()
                 return BrokerResult(
                     operation="list",
                     subscriptions=[
                         *(self._sale_json(item) for item in sales),
                         *(self._auction_json(item) for item in auctions),
+                        *(self._rental_json(item) for item in rentals),
                     ],
                 )
             if operation == "cancel":
@@ -168,9 +208,14 @@ class SubscriptionBroker:
                 subscription_id = _integer(
                     payload.get("id"), "id", minimum=1, maximum=2**31 - 1
                 )
-                model = PropertySubscription if kind == "house" else AuctionSubscription
-                if kind not in {"house", "auction"}:
-                    raise RequestError("kind must be house or auction")
+                models = {
+                    "house": PropertySubscription,
+                    "auction": AuctionSubscription,
+                    "rental": RentalSubscription,
+                }
+                model = models.get(kind)
+                if model is None:
+                    raise RequestError("kind must be house, auction, or rental")
                 item = session.scalar(
                     select(model).where(
                         model.id == subscription_id,
@@ -187,6 +232,8 @@ class SubscriptionBroker:
                 return self._create_house(session, payload)
             if operation == "auction-create":
                 return self._create_auction(session, payload)
+            if operation == "rental-create":
+                return self._create_rental(session, payload)
             raise RequestError("unsupported operation")
 
     def _create_house(self, session, payload: dict[str, Any]) -> BrokerResult:
@@ -254,6 +301,55 @@ class SubscriptionBroker:
         if not any(value is not None for key, value in values.items() if key not in {"discord_user_id", "channel_id"}):
             raise RequestError("at least one auction condition is required")
         return self._insert_unique(session, AuctionSubscription, values, self._auction_json)
+
+    def _create_rental(self, session, payload: dict[str, Any]) -> BrokerResult:
+        rental_type = _text(payload.get("rental_type"), "rental_type")
+        if rental_type is not None and rental_type not in RENTAL_TYPES:
+            raise RequestError("rental_type is invalid")
+        min_area = _decimal(
+            payload.get("min_area_ping"),
+            "min_area_ping",
+            minimum=0.01,
+            maximum=100000,
+        )
+        max_area = _decimal(
+            payload.get("max_area_ping"),
+            "max_area_ping",
+            minimum=0.01,
+            maximum=100000,
+        )
+        if min_area is not None and max_area is not None and min_area > max_area:
+            raise RequestError("min_area_ping must not exceed max_area_ping")
+        values = {
+            "discord_user_id": ALLOWED_USER_ID,
+            "city": _text(payload.get("city"), "city"),
+            "district": _text(payload.get("district"), "district"),
+            "max_monthly_rent_twd": _integer(
+                payload.get("max_monthly_rent_twd"),
+                "max_monthly_rent_twd",
+                minimum=1,
+            ),
+            "min_area_ping": min_area,
+            "max_area_ping": max_area,
+            "rental_type": rental_type,
+            "layout_contains": _text(
+                payload.get("layout_contains"), "layout_contains"
+            ),
+            "features_contains": _text(
+                payload.get("features_contains"),
+                "features_contains",
+                maximum=64,
+            ),
+            "min_score": _integer(
+                payload.get("min_score"), "min_score", minimum=0, maximum=100
+            ),
+            "channel_id": self.settings.discord_rental_search_channel_id,
+        }
+        if not values["city"]:
+            raise RequestError("city is required")
+        return self._insert_unique(
+            session, RentalSubscription, values, self._rental_json
+        )
 
     def _insert_unique(self, session, model, values, serializer) -> BrokerResult:
         active_count = len(

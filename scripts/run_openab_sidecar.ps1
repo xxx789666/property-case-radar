@@ -35,6 +35,33 @@ if (-not (Test-Path -LiteralPath $subscriptionBroker)) { throw "Subscription bro
 if (-not $downloadRoot) { throw "AUCTION_CAPTURE_DOWNLOAD_DIR is not configured" }
 Set-Location -LiteralPath $repoRoot
 
+# Task Scheduler can terminate this PowerShell host before its finally
+# block runs, leaving an older subscription broker alive on port 18767.
+# Remove only orphaned Python processes whose command line contains this
+# exact project script before starting the single current broker.
+$subscriptionBrokerFull = [IO.Path]::GetFullPath($subscriptionBroker)
+$staleBrokers = @(
+    Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+        Where-Object {
+            $_.CommandLine -and
+            $_.CommandLine.IndexOf(
+                $subscriptionBrokerFull,
+                [StringComparison]::OrdinalIgnoreCase
+            ) -ge 0
+        }
+)
+foreach ($staleBroker in $staleBrokers) {
+    Stop-Process -Id $staleBroker.ProcessId -Force -ErrorAction Stop
+}
+for ($attempt = 0; $attempt -lt 40; $attempt++) {
+    $listener = Get-NetTCPConnection -LocalPort 18767 -State Listen -ErrorAction SilentlyContinue
+    if (-not $listener) { break }
+    Start-Sleep -Milliseconds 250
+}
+if (Get-NetTCPConnection -LocalPort 18767 -State Listen -ErrorAction SilentlyContinue) {
+    throw "Previous subscription broker did not release port 18767"
+}
+
 $env:ACP_SIDECAR_LISTEN_HOST = "127.0.0.1"
 $env:ACP_SIDECAR_LISTEN_PORT = "18765"
 $env:ACP_AGENT_COMMAND = $nodeExe

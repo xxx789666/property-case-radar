@@ -58,6 +58,7 @@ _EXPECTED_AUCTION_TABLES = {
 _EXPECTED_RENTAL_TABLES = {
     "rental_properties",
     "rental_price_history",
+    "rental_subscriptions",
 }
 
 _OUTBOX_ONLY_COLUMNS = {"status_history_id", "delivery_key", "status", "attempt_count", "last_error"}

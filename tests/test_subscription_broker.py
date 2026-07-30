@@ -16,6 +16,7 @@ def _broker() -> SubscriptionBroker:
     broker.settings = SimpleNamespace(
         discord_sale_search_channel_id=11,
         discord_auction_search_channel_id=22,
+        discord_rental_search_channel_id=33,
     )
     return broker
 
@@ -95,3 +96,40 @@ def test_house_subscription_accepts_type_a_building_land() -> None:
         broker.engine.dispose()
 
     assert created.subscription["property_type"] == "type_a_building_land"
+
+
+def test_rental_subscription_create_list_duplicate_and_cancel() -> None:
+    broker = _broker()
+    try:
+        payload = {
+            "operation": "rental-create",
+            "city": "桃園市",
+            "district": "中壢區",
+            "max_monthly_rent_twd": 30_000,
+            "min_area_ping": 20,
+            "rental_type": "entire_home",
+            "layout_contains": "2房",
+            "features_contains": "有電梯",
+            "min_score": 80,
+        }
+        created = broker.execute(payload)
+        duplicate = broker.execute(payload)
+        listed = broker.execute({"operation": "list"})
+        cancelled = broker.execute(
+            {
+                "operation": "cancel",
+                "kind": "rental",
+                "id": created.subscription["id"],
+            }
+        )
+        empty = broker.execute({"operation": "list"})
+    finally:
+        broker.engine.dispose()
+
+    assert created.operation == "created"
+    assert created.subscription["max_monthly_rent_twd"] == 30_000
+    assert created.subscription["rental_type"] == "entire_home"
+    assert duplicate.operation == "already-exists"
+    assert listed.subscriptions[0]["kind"] == "rental"
+    assert cancelled.changed is True
+    assert empty.subscriptions == []

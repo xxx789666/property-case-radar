@@ -28,8 +28,9 @@ python -X utf8 -m tools.radar_agent_subscription <subcommand> [options]
 
 - `house-subscribe`：參數與 `house-search` 相同（不含 `--limit`）。
 - `auction-subscribe`：參數與 `auction-search` 相同（不含 `--limit`）。
+- `rental-subscribe`：參數與 `rental-search` 相同（不含 `--limit`）。
 - `list`：查看目前有效訂閱。
-- `cancel --kind {house,auction} --id <訂閱編號>`：取消指定訂閱。
+- `cancel --kind {house,auction,rental} --id <訂閱編號>`：取消指定訂閱。
 
 建立或取消後，只依工具回傳結果回答，不得自行宣稱成功。此工具只能呼叫本機受限訂閱 broker；仍禁止直接連線資料庫、執行 SQL、讀取 `.env` 或使用 repository。
 
@@ -65,6 +66,12 @@ python -X utf8 -m tools.radar_agent_subscription <subcommand> [options]
 - 設備條件如「有電梯」「可開伙」「可養寵物」使用
   `--features-contains`。一次只能精確傳入一個設備文字；多條件時先使用
   最重要條件查詢，再從回傳的 `features` 如實篩選，不得臆造。
+- 使用者要求訂閱租屋時，使用
+  `python -X utf8 -m tools.radar_agent_subscription rental-subscribe`
+  並傳入與 `rental-search` 相同的條件。建立成功後說明：只通知訂閱後新抓到、
+  且符合條件的案件，既有基準資料不補發。
+- 「列出我的訂閱」使用 `list`；「取消租屋訂閱 7」使用
+  `cancel --kind rental --id 7`。不得用查詢工具假裝已建立或取消訂閱。
 - 使用者提到「桃園中壢區」時，查詢參數正規化為
   `--city 桃園市 --district 中壢區`。
 - 「1500 萬以內／以下／已內」正規化為

@@ -77,6 +77,9 @@ class NotificationLog(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     property_id: Mapped[int | None] = mapped_column(ForeignKey("properties.id"))
+    rental_property_id: Mapped[int | None] = mapped_column(
+        ForeignKey("rental_properties.id")
+    )
     auction_case_id: Mapped[int | None] = mapped_column(ForeignKey("auction_cases.id"))
     # Which specific auction_status_history row this notification renders
     # (None for a "new case" notification, which has no single event).

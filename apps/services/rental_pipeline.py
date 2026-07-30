@@ -10,6 +10,10 @@ from database.models.rental import RentalProperty
 from database.repositories.rental import RentalRepository
 from notifications.rental_notification import RentalNotificationRouter
 from scoring.rental_score import RentalScoreInput, score_rental
+from apps.services.subscription_notifications import (
+    deliver_pending_subscription_notifications,
+    queue_rental_subscription_matches,
+)
 
 
 @dataclass(frozen=True)
@@ -91,6 +95,9 @@ async def ingest_rental_listings(
     session.flush()
     for item, _, _, drop_rate in events:
         score_inventory_item(item, session, drop_rate)
+    for item, created, _, _ in events:
+        if created and not backfill:
+            queue_rental_subscription_matches(session, item)
     session.commit()
     if notifier:
         for item, created, dropped, _ in events:
@@ -100,6 +107,9 @@ async def ingest_rental_listings(
                 price_dropped=dropped,
                 send_new=notify_new,
             )
+        await deliver_pending_subscription_notifications(
+            session, notifier.subscription_channel
+        )
     return RentalIngestResult(
         processed=len(listings), created=created_count, price_drops=drops
     )

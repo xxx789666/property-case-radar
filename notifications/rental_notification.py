@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Callable, Protocol
 
 import discord
 
@@ -57,11 +57,18 @@ class RentalNotificationRouter:
         price_drop_channel: RentalMessageChannel,
         high_score_channel: RentalMessageChannel,
         high_score_threshold: int = 80,
+        channel_factory: Callable[[int], RentalMessageChannel] | None = None,
     ) -> None:
         self.new_channel = new_channel
         self.price_drop_channel = price_drop_channel
         self.high_score_channel = high_score_channel
         self.high_score_threshold = high_score_threshold
+        self.channel_factory = channel_factory
+
+    def subscription_channel(self, channel_id: int) -> RentalMessageChannel:
+        if self.channel_factory is None:
+            raise RuntimeError("subscription channel routing is not configured")
+        return self.channel_factory(channel_id)
 
     async def publish(
         self,

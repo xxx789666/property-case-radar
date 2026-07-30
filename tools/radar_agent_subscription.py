@@ -35,9 +35,34 @@ def _parser() -> argparse.ArgumentParser:
         choices=("true", "false"),
     )
     auction.add_argument("--min-investment-score", type=float, dest="min_investment_score")
+    rental = sub.add_parser("rental-subscribe")
+    rental.add_argument("--city", required=True)
+    rental.add_argument("--district")
+    rental.add_argument(
+        "--max-monthly-rent-twd", type=int, dest="max_monthly_rent_twd"
+    )
+    rental.add_argument("--min-area-ping", type=float, dest="min_area_ping")
+    rental.add_argument("--max-area-ping", type=float, dest="max_area_ping")
+    rental.add_argument(
+        "--rental-type",
+        choices=(
+            "entire_home",
+            "independent_suite",
+            "shared_suite",
+            "room",
+            "parking",
+            "other",
+        ),
+        dest="rental_type",
+    )
+    rental.add_argument("--layout-contains", dest="layout_contains")
+    rental.add_argument("--features-contains", dest="features_contains")
+    rental.add_argument("--min-score", type=int, dest="min_score")
     sub.add_parser("list")
     cancel = sub.add_parser("cancel")
-    cancel.add_argument("--kind", choices=("house", "auction"), required=True)
+    cancel.add_argument(
+        "--kind", choices=("house", "auction", "rental"), required=True
+    )
     cancel.add_argument("--id", type=int, required=True)
     return parser
 
@@ -47,7 +72,11 @@ def _payload(args: argparse.Namespace) -> dict:
         return {"operation": "list"}
     if args.command == "cancel":
         return {"operation": "cancel", "kind": args.kind, "id": args.id}
-    operation = "house-create" if args.command == "house-subscribe" else "auction-create"
+    operation = {
+        "house-subscribe": "house-create",
+        "auction-subscribe": "auction-create",
+        "rental-subscribe": "rental-create",
+    }[args.command]
     values = {
         key: value
         for key, value in vars(args).items()
