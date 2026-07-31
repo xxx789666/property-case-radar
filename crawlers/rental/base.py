@@ -29,8 +29,8 @@ class RentalListing:
     def __post_init__(self) -> None:
         if self.monthly_rent_twd <= 0 or self.rent_per_ping_twd <= 0:
             raise ValueError("rental prices must be positive")
-        if self.area_ping <= 0:
-            raise ValueError("rental area must be positive")
+        if self.area_ping <= 0 or self.area_ping >= Decimal("100000000"):
+            raise ValueError("rental area must fit Numeric(10, 2)")
 
     def to_model_values(self) -> dict[str, Any]:
         return asdict(self)

@@ -31,15 +31,17 @@ class Settings(BaseSettings):
     rental_capture_workers: int = Field(default=4, ge=1, le=8)
     rental_capture_json_retention_days: int = Field(default=30, ge=1, le=365)
     rental_high_score_threshold: int = Field(default=80, ge=0, le=100)
+    rental_high_score_digest_limit: int = Field(default=20, ge=1, le=50)
     rental_status_missing_days: int = Field(default=3, ge=1, le=30)
     rental_status_verify_limit: int = Field(default=500, ge=1, le=2000)
-    discord_system_alert_channel_id: int = 1530072733818556541
+    discord_system_alert_channel_id: int = 1532653523588616242
     sale_scheduler_daily_hour: int = Field(default=12, ge=0, le=23)
     sale_scheduler_daily_minute: int = Field(default=0, ge=0, le=59)
     scheduler_daily_hour: int = Field(default=13, ge=0, le=23)
     scheduler_daily_minute: int = Field(default=0, ge=0, le=59)
     sale_crawl_interval_minutes: int = Field(default=1440, ge=1440, le=10080)
     sale_high_score_threshold: int = Field(default=80, ge=0, le=100)
+    sale_high_score_digest_limit: int = Field(default=20, ge=1, le=50)
     sale_capture_enabled: bool = True
     sale_capture_script: Path = Path("scripts/capture_sale_results.py")
     sale_capture_output_dir: Path = Path(r"D:\網頁識別認證\sale_json")
@@ -86,6 +88,11 @@ class Settings(BaseSettings):
     )
     database_backup_retention_days: int = Field(default=14, ge=1, le=365)
     system_alert_state_path: Path = Path("logs/system-alert-state.json")
+    self_heal_state_path: Path = Path("logs/self-heal-state.json")
+    self_heal_retry_delay_minutes: int = Field(default=15, ge=1, le=180)
+    self_heal_max_retries: int = Field(default=3, ge=0, le=10)
+    self_heal_service_cooldown_minutes: int = Field(default=10, ge=1, le=180)
+    self_heal_service_attempt_window_minutes: int = Field(default=60, ge=10, le=1440)
 
     # Official MOI actual-price current-batch sync.  The Judicial Yuan
     # The MOJ auction capture runs separately through the configured local

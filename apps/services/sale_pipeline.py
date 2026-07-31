@@ -15,6 +15,10 @@ from apps.services.subscription_notifications import (
     deliver_pending_subscription_notifications,
     queue_sale_subscription_matches,
 )
+from apps.services.high_score_digest import (
+    deliver_high_score_digest,
+    queue_sale_high_score,
+)
 
 MAX_STORABLE_DISCOUNT_RATE = Decimal("999.9999")
 
@@ -170,6 +174,8 @@ async def ingest_sale_listings(
     notifier: SaleNotificationRouter | None = None,
     notify_new: bool = True,
     backfill: bool = False,
+    high_score_threshold: int = 80,
+    high_score_digest_limit: int = 20,
 ) -> IngestResult:
     repository = PropertyRepository(session)
     listings = await crawler.fetch()
@@ -192,6 +198,13 @@ async def ingest_sale_listings(
         created_count += int(created)
         price_drops += int(dropped)
         notification_events.append((item, created, dropped))
+        queue_sale_high_score(
+            session,
+            item,
+            created=created,
+            price_dropped=dropped,
+            threshold=high_score_threshold,
+        )
         if created and not backfill:
             queue_sale_subscription_matches(session, item)
     session.commit()
@@ -202,7 +215,14 @@ async def ingest_sale_listings(
                 created=created,
                 price_dropped=dropped,
                 send_new=notify_new,
+                send_high_score=False,
             )
+        await deliver_high_score_digest(
+            session,
+            notifier.high_score_channel,
+            source="sale",
+            limit=high_score_digest_limit,
+        )
         await deliver_pending_subscription_notifications(
             session, notifier.subscription_channel
         )

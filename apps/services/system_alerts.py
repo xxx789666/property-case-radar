@@ -24,10 +24,13 @@ def send_discord_system_message(settings: Settings, message: str) -> bool:
             "https://discord.com/api/v10/channels/"
             f"{settings.discord_system_alert_channel_id}/messages"
         ),
-        data=json.dumps({"content": message}, ensure_ascii=False).encode("utf-8"),
+        # Keep the HTTP body ASCII-only by escaping non-ASCII characters.
+        # Discord decodes the JSON escapes back to Unicode. This prevents a
+        # Windows console code page from changing Chinese into question marks.
+        data=json.dumps({"content": message}, ensure_ascii=True).encode("ascii"),
         headers={
             "Authorization": f"Bot {settings.discord_token}",
-            "Content-Type": "application/json",
+            "Content-Type": "application/json; charset=utf-8",
             "User-Agent": "PropertyCaseRadar/1.0",
         },
         method="POST",

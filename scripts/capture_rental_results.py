@@ -123,6 +123,15 @@ def positive_decimal(raw: str) -> Decimal | None:
     return value if value > 0 else None
 
 
+def parse_area(raw: dict[str, object], text: str) -> Decimal | None:
+    area_text = " ".join(str(raw.get("area", "")).split())
+    match = re.search(r"([\d,]+(?:\.\d+)?)\s*坪", area_text or text)
+    if match is None:
+        return None
+    area = positive_decimal(match.group(1))
+    return area if area is not None and area < Decimal("100000000") else None
+
+
 def parse_card(city: str, raw: dict[str, object]) -> dict[str, object] | None:
     text = " ".join(str(raw.get("text", "")).split())
     source_id = str(raw.get("source_property_id", "")).strip()
@@ -131,16 +140,15 @@ def parse_card(city: str, raw: dict[str, object]) -> dict[str, object] | None:
         match = re.search(r"/(\d{6,})$", urlparse(url).path)
         source_id = match.group(1) if match else ""
     rent_match = re.search(r"([\d,]+)\s*元\s*/\s*月", text)
-    area_match = re.search(r"([\d,]+(?:\.\d+)?)\s*坪", text)
+    area = parse_area(raw, text)
     location_match = re.fullmatch(
         r"([^-\s]{1,6}[區鄉鎮市])-([^\s]+)",
         str(raw.get("location", "")).strip(),
     )
-    if not source_id or rent_match is None or area_match is None or location_match is None:
+    if not source_id or rent_match is None or area is None or location_match is None:
         return None
     monthly_rent = int(rent_match.group(1).replace(",", ""))
-    area = positive_decimal(area_match.group(1))
-    if monthly_rent <= 0 or area is None:
+    if monthly_rent <= 0:
         return None
     district, address = location_match.group(1), location_match.group(2)
     layout_match = re.search(r"(\d+房(?:\d+廳)?(?:\d+衛)?)", text)
@@ -198,7 +206,7 @@ def parse_business_card(
         )
         source_id = match.group(1) if match else ""
     rent_match = re.search(r"([\d,]+)\s*元\s*/\s*月", text)
-    area_match = re.search(r"([\d,]+(?:\.\d+)?)\s*坪", text)
+    area = parse_area(raw, text)
     location_match = re.search(
         r"([^-\s]{1,6}[區鄉鎮市])-([^\s]+)",
         str(raw.get("location", "")).strip(),
@@ -207,13 +215,12 @@ def parse_business_card(
         business_kind not in BUSINESS_RENTAL_KIND_LABELS
         or not source_id
         or rent_match is None
-        or area_match is None
+        or area is None
         or location_match is None
     ):
         return None
     monthly_rent = int(rent_match.group(1).replace(",", ""))
-    area = positive_decimal(area_match.group(1))
-    if monthly_rent <= 0 or area is None:
+    if monthly_rent <= 0:
         return None
     district, address = location_match.group(1), location_match.group(2)
     floor_match = re.search(r"((?:B?\d+|頂|整棟)F?)\s*/\s*(\d+)F", text, re.IGNORECASE)
@@ -355,6 +362,9 @@ def capture_city(city: str, region_id: int, args: argparse.Namespace) -> tuple[l
                                 location: [...element.querySelectorAll('.inline-flex-row')]
                                     .map(node => (node.innerText || '').trim())
                                     .find(value => /^[^-\\s]{1,6}[區鄉鎮市]-\\S+$/.test(value)) || "",
+                                area: [...element.querySelectorAll('.item-info-txt, .inline-flex-row')]
+                                    .map(node => (node.innerText || '').trim())
+                                    .find(value => /^[\\d,.]+\\s*坪/.test(value)) || "",
                                 text: element.innerText || element.textContent || ""
                             }))"""
                         )
@@ -417,6 +427,9 @@ def capture_city(city: str, region_id: int, args: argparse.Namespace) -> tuple[l
                                     url: link?.href || "",
                                     title: link?.innerText || "",
                                     location,
+                                    area: [...element.querySelectorAll('.item-info-txt')]
+                                        .map(node => (node.innerText || '').trim())
+                                        .find(value => /^[\\d,.]+\\s*坪/.test(value)) || "",
                                     text: element.innerText || element.textContent || ""
                                 };
                             })"""

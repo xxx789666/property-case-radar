@@ -1,8 +1,12 @@
 import json
 import importlib.util
+from decimal import Decimal
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import pytest
+
+from crawlers.rental.base import RentalListing
 from crawlers.rental.captured_source import CapturedRentalCrawler, result_path
 
 SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "capture_rental_results.py"
@@ -90,6 +94,39 @@ def test_parse_public_591_business_rental_card() -> None:
     assert item["area_ping"] == "79.55"
     assert item["rental_type"] == "其他"
     assert "店面" in str(item["features"])
+
+
+def test_business_area_uses_structured_card_value_instead_of_title_numbers() -> None:
+    item = capture.parse_business_card(
+        "臺中市",
+        7,
+        {
+            "source_property_id": "21183435",
+            "url": "https://business.591.com.tw/rent/21183435",
+            "title": "廠房建600,900,1200,2000坪",
+            "text": "廠房建600,900,1200,2000坪 900坪 整棟/3F 300,000元/月",
+            "area": "900坪整棟/3F",
+            "location": "大里區-仁化路",
+        },
+    )
+    assert item is not None
+    assert item["area_ping"] == "900"
+    assert item["rent_per_ping_twd"] == 333
+
+
+def test_rental_listing_rejects_area_outside_database_precision() -> None:
+    with pytest.raises(ValueError, match=r"Numeric\(10, 2\)"):
+        RentalListing(
+            source="591-business",
+            source_property_id="21183435",
+            url="https://business.591.com.tw/rent/21183435",
+            title="invalid area",
+            city="臺中市",
+            district="大里區",
+            monthly_rent_twd=300_000,
+            rent_per_ping_twd=1,
+            area_ping=Decimal("60090012002000"),
+        )
 
 
 def test_parse_public_591_live_work_rental_card() -> None:

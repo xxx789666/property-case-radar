@@ -22,6 +22,7 @@ RUNNING_TASKS = (
     "Property Case Radar OpenAB Gateway",
     "Property Case Radar OpenAB Sidecar",
 )
+PERIODIC_TASKS = ("Property Case Radar Scheduler Self Healer",)
 
 
 def tcp_ready(host: str, port: int, timeout: float = 2) -> bool:
@@ -43,7 +44,7 @@ def http_service_ready(url: str, timeout: float = 2) -> bool:
 
 
 def windows_task_states() -> dict[str, str]:
-    names = ",".join(f"'{name}'" for name in RUNNING_TASKS)
+    names = ",".join(f"'{name}'" for name in RUNNING_TASKS + PERIODIC_TASKS)
     command = (
         f"Get-ScheduledTask -TaskName {names} -ErrorAction SilentlyContinue | "
         "Select-Object TaskName,State | ConvertTo-Json -Compress"
@@ -97,6 +98,18 @@ def run_watchdog() -> int:
                 name,
                 running,
                 f"目前狀態：{task_states.get(name, '找不到排程')}",
+            )
+        )
+
+    for name in PERIODIC_TASKS:
+        state = task_states.get(name)
+        enabled = state in {"Ready", "Running", "3", "4"}
+        checks.append(
+            (
+                f"watchdog:task:{name}",
+                name,
+                enabled,
+                f"目前狀態：{state or '找不到排程'}",
             )
         )
 

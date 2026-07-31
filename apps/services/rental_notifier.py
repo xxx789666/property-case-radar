@@ -32,20 +32,20 @@ async def live_rental_notifier(
         yield None
         return
     try:
+        channels: dict[int, DiscordRestChannelSender] = {}
+
+        def channel(channel_id: int) -> DiscordRestChannelSender:
+            return channels.setdefault(
+                channel_id,
+                DiscordRestChannelSender(client, channel_id),
+            )
+
         yield RentalNotificationRouter(
-            new_channel=DiscordRestChannelSender(
-                client, settings.discord_rental_new_channel_id
-            ),
-            price_drop_channel=DiscordRestChannelSender(
-                client, settings.discord_rental_price_drop_channel_id
-            ),
-            high_score_channel=DiscordRestChannelSender(
-                client, settings.discord_rental_high_score_channel_id
-            ),
+            new_channel=channel(settings.discord_rental_new_channel_id),
+            price_drop_channel=channel(settings.discord_rental_price_drop_channel_id),
+            high_score_channel=channel(settings.discord_rental_high_score_channel_id),
             high_score_threshold=settings.rental_high_score_threshold,
-            channel_factory=lambda channel_id: DiscordRestChannelSender(
-                client, channel_id
-            ),
+            channel_factory=channel,
         )
     finally:
         await client.close()

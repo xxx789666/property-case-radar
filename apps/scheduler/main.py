@@ -3,7 +3,6 @@ import logging
 from collections.abc import Callable
 
 from apscheduler.schedulers.blocking import BlockingScheduler
-from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 from sqlalchemy.orm import Session, sessionmaker
 
 from apps.config import Settings, get_settings
@@ -23,6 +22,7 @@ from apps.services.rental_notifier import live_rental_notifier
 from apps.services.rental_pipeline import ingest_rental_listings
 from apps.services.rental_status_lifecycle import reconcile_stale_rental_listings
 from apps.services.system_alerts import update_system_alert
+from apps.services.scheduler_job_recovery import SchedulerJobRecovery
 from apps.services.subscription_notifications import (
     deliver_pending_subscription_notifications,
 )
@@ -53,22 +53,7 @@ logger = logging.getLogger(__name__)
 
 
 def attach_failure_alerts(scheduler: BlockingScheduler, settings: Settings) -> None:
-    def report_job_result(event) -> None:
-        failed = event.exception is not None
-        detail = (
-            str(event.exception)[:1500]
-            if failed
-            else f"{event.job_id} 已正常完成"
-        )
-        update_system_alert(
-            settings,
-            key=f"scheduler-job:{event.job_id}",
-            failing=failed,
-            title=f"排程工作 {event.job_id}",
-            detail=detail,
-        )
-
-    scheduler.add_listener(report_job_result, EVENT_JOB_ERROR | EVENT_JOB_EXECUTED)
+    SchedulerJobRecovery(scheduler, settings).attach()
 
 
 class _RawAnnouncementBatchSource(AuctionAnnouncementSource):
@@ -189,26 +174,6 @@ def make_live_sale_job(
 ) -> Callable[[], None]:
     async def run_sale_cycle() -> None:
         with factory() as session:
-            focus_districts = list(
-                session.execute(
-                    select(
-                        RentalSubscription.city,
-                        RentalSubscription.district,
-                    )
-                    .where(
-                        RentalSubscription.active.is_(True),
-                        RentalSubscription.district.is_not(None),
-                    )
-                    .distinct()
-                ).tuples()
-            )
-            crawler.set_focus_districts(
-                [
-                    (city, district)
-                    for city, district in focus_districts
-                    if district is not None
-                ]
-            )
             existing_source_count = session.scalar(
                 select(func.count())
                 .select_from(Property)
@@ -222,6 +187,8 @@ def make_live_sale_job(
                     # Channel 1530073991442595880 receives only the daily
                     # county/city count summary, never one message per item.
                     notify_new=False,
+                    high_score_threshold=settings.sale_high_score_threshold,
+                    high_score_digest_limit=settings.sale_high_score_digest_limit,
                 )
                 if notifier is not None and existing_source_count > 0:
                     summary = await deliver_daily_sale_summary(
@@ -299,6 +266,26 @@ def make_live_rental_job(
 ) -> Callable[[], None]:
     async def run_rental_cycle() -> None:
         with factory() as session:
+            focus_districts = list(
+                session.execute(
+                    select(
+                        RentalSubscription.city,
+                        RentalSubscription.district,
+                    )
+                    .where(
+                        RentalSubscription.active.is_(True),
+                        RentalSubscription.district.is_not(None),
+                    )
+                    .distinct()
+                ).tuples()
+            )
+            crawler.set_focus_districts(
+                [
+                    (city, district)
+                    for city, district in focus_districts
+                    if district is not None
+                ]
+            )
             existing_source_count = session.scalar(
                 select(func.count())
                 .select_from(RentalProperty)
@@ -312,6 +299,8 @@ def make_live_rental_job(
                     notifier=notifier if not baseline else None,
                     notify_new=False,
                     backfill=baseline,
+                    high_score_threshold=settings.rental_high_score_threshold,
+                    high_score_digest_limit=settings.rental_high_score_digest_limit,
                 )
                 if notifier is not None and not baseline:
                     summary = await deliver_daily_rental_summary(

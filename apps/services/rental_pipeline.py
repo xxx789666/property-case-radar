@@ -14,6 +14,10 @@ from apps.services.subscription_notifications import (
     deliver_pending_subscription_notifications,
     queue_rental_subscription_matches,
 )
+from apps.services.high_score_digest import (
+    deliver_high_score_digest,
+    queue_rental_high_score,
+)
 
 
 @dataclass(frozen=True)
@@ -71,6 +75,8 @@ async def ingest_rental_listings(
     notifier: RentalNotificationRouter | None = None,
     notify_new: bool = False,
     backfill: bool = False,
+    high_score_threshold: int = 80,
+    high_score_digest_limit: int = 20,
 ) -> RentalIngestResult:
     listings = await crawler.fetch()
     repository = RentalRepository(session)
@@ -95,7 +101,14 @@ async def ingest_rental_listings(
     session.flush()
     for item, _, _, drop_rate in events:
         score_inventory_item(item, session, drop_rate)
-    for item, created, _, _ in events:
+    for item, created, dropped, _ in events:
+        queue_rental_high_score(
+            session,
+            item,
+            created=created,
+            price_dropped=dropped,
+            threshold=high_score_threshold,
+        )
         if created and not backfill:
             queue_rental_subscription_matches(session, item)
     session.commit()
@@ -106,7 +119,14 @@ async def ingest_rental_listings(
                 created=created,
                 price_dropped=dropped,
                 send_new=notify_new,
+                send_high_score=False,
             )
+        await deliver_high_score_digest(
+            session,
+            notifier.high_score_channel,
+            source="rental",
+            limit=high_score_digest_limit,
+        )
         await deliver_pending_subscription_notifications(
             session, notifier.subscription_channel
         )

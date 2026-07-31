@@ -77,6 +77,7 @@ class RentalNotificationRouter:
         created: bool,
         price_dropped: bool,
         send_new: bool,
+        send_high_score: bool = True,
     ) -> list[str]:
         kinds: list[str] = []
         genuine_new = created and not item.is_backfill
@@ -87,7 +88,8 @@ class RentalNotificationRouter:
             await self._send(self.price_drop_channel, item, "price_drop")
             kinds.append("price_drop")
         if (
-            (genuine_new or price_dropped)
+            send_high_score
+            and (genuine_new or price_dropped)
             and item.score is not None
             and item.score >= self.high_score_threshold
         ):

@@ -104,7 +104,7 @@ async def test_session_is_closed_even_when_the_caller_body_raises() -> None:
 
 
 @pytest.mark.asyncio
-async def test_discord_rest_channel_sender_fetches_the_channel_fresh_and_sends() -> None:
+async def test_discord_rest_channel_sender_caches_channel_for_the_run() -> None:
     client = AsyncMock()
     channel = AsyncMock()
     client.fetch_channel = AsyncMock(return_value=channel)
@@ -112,9 +112,10 @@ async def test_discord_rest_channel_sender_fetches_the_channel_fresh_and_sends()
 
     embed = discord.Embed(title="test")
     await sender.send(embed=embed)
+    await sender.send(embed=embed)
 
     client.fetch_channel.assert_awaited_once_with(123456789)
-    channel.send.assert_awaited_once_with(embed=embed)
+    assert channel.send.await_count == 2
 
 
 @pytest.mark.asyncio

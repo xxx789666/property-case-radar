@@ -44,31 +44,41 @@ logger = logging.getLogger(__name__)
 class DiscordRestChannelSender:
     """A ``notifications.auction_notification.MessageChannel`` backed by
     plain HTTP calls (``Client.fetch_channel`` + ``channel.send``), never
-    the gateway. The channel object itself is re-fetched on every send
-    rather than cached, since this sender's ``Client`` only lives for one
-    scheduler tick -- no benefit to caching across a lifetime that short,
-    and it avoids ever sending through a stale/closed channel reference.
+    the gateway. The channel object is fetched once and cached only for
+    this short-lived scheduler tick. This avoids one extra Discord API
+    request per notification while never retaining a channel across
+    client sessions.
     """
 
     def __init__(self, client: discord.Client, channel_id: int) -> None:
         self._client = client
         self._channel_id = channel_id
+        self._channel = None
+
+    @property
+    def channel_id(self) -> int:
+        return self._channel_id
+
+    async def _get_channel(self):
+        if self._channel is None:
+            self._channel = await self._client.fetch_channel(self._channel_id)
+        return self._channel
 
     async def send(
         self, *, embed: discord.Embed, content: str | None = None
     ) -> object:
-        channel = await self._client.fetch_channel(self._channel_id)
+        channel = await self._get_channel()
         if content is None:
             return await channel.send(embed=embed)
         return await channel.send(content=content, embed=embed)
 
     async def edit(self, *, message_id: int, embed: discord.Embed) -> object:
-        channel = await self._client.fetch_channel(self._channel_id)
+        channel = await self._get_channel()
         message = await channel.fetch_message(message_id)
         return await message.edit(embed=embed)
 
     async def find_message_id(self, *, embed_title: str) -> int | None:
-        channel = await self._client.fetch_channel(self._channel_id)
+        channel = await self._get_channel()
         async for message in channel.history(limit=100):
             if self._client.user is not None and message.author.id != self._client.user.id:
                 continue
@@ -120,17 +130,23 @@ async def live_auction_notifier(settings: Settings) -> AsyncIterator[AuctionNoti
         return
 
     try:
+        channels: dict[int, DiscordRestChannelSender] = {}
+
+        def channel(channel_id: int) -> DiscordRestChannelSender:
+            return channels.setdefault(
+                channel_id,
+                DiscordRestChannelSender(client, channel_id),
+            )
+
         yield AuctionNotificationRouter(
-            new_channel=DiscordRestChannelSender(client, settings.discord_auction_new_channel_id),
-            upcoming_channel=DiscordRestChannelSender(client, settings.discord_auction_upcoming_channel_id),
-            round_channel=DiscordRestChannelSender(client, settings.discord_auction_round_channel_id),
-            high_score_channel=DiscordRestChannelSender(client, settings.discord_auction_high_score_channel_id),
-            suspended_channel=DiscordRestChannelSender(client, settings.discord_auction_suspended_channel_id),
+            new_channel=channel(settings.discord_auction_new_channel_id),
+            upcoming_channel=channel(settings.discord_auction_upcoming_channel_id),
+            round_channel=channel(settings.discord_auction_round_channel_id),
+            high_score_channel=channel(settings.discord_auction_high_score_channel_id),
+            suspended_channel=channel(settings.discord_auction_suspended_channel_id),
             high_score_threshold=settings.auction_high_score_threshold,
             upcoming_within_days=settings.auction_upcoming_within_days,
-            channel_factory=lambda channel_id: DiscordRestChannelSender(
-                client, channel_id
-            ),
+            channel_factory=channel,
         )
     finally:
         await client.close()
