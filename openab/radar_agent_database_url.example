@@ -1,0 +1,1 @@
+postgresql+psycopg://radar_agent_ro:REPLACE_ME@localhost:5432/radar

@@ -1,0 +1,79 @@
+# OpenAB config template -- Property Case Radar Codex ACP bridge, GATEWAY
+# container only. Committed to git; contains NO secret. The only
+# runtime-substituted value is the Discord bot token, filled in by
+# openab/gateway/runtime_config.py from the OPENAB_DISCORD_BOT_TOKEN Docker
+# secret (see openab/README.md) and written to a 0600 file on tmpfs before
+# OpenAB starts.
+#
+# This container never holds a database credential, Codex auth, or the
+# radar_agent_database_url secret in any form -- [agent] below spawns only
+# bridge-client.mjs, a pure byte relay with no shell/exec capability, which
+# opens one TCP connection to the codex-acp SIDECAR container (a different
+# container, on an internal-only Compose network with no other members and
+# no external route). The actual codex-acp process -- and the database
+# credential it needs -- lives entirely in that sidecar; see
+# openab/sidecar/. This is the two-container split from the security
+# review: gateway compromise (e.g. via a malicious Discord message) has no
+# path to any database credential, because this container never has one.
+#
+# This MUST be a dedicated Discord bot application, never the same token as
+# RadarBot's DISCORD_TOKEN (apps/config.py / apps/discord_bot/main.py). Two
+# Gateway (websocket) clients identifying with the same bot token is not a
+# supported Discord configuration -- see openab/README.md's "token boundary"
+# section for why.
+
+[discord]
+bot_token = "${OPENAB_DISCORD_BOT_TOKEN}"
+
+# Fixed to exactly the three private search channels
+# -- the same channels apps/discord_bot/main.py's RadarBot already scopes
+# /house and /auction search to (CLAUDE.md treats these IDs as
+# environment-specific configuration, not secrets, so they are hardcoded
+# here rather than templated). runtime_config.py refuses to start OpenAB if
+# the effective allowed_channels ever differs from this exact set.
+allowed_channels = [
+  "1530076451242508318",  # 房地案件-搜尋 (private)
+  "1530076529751756870",  # 法拍案件-搜尋 (private)
+  "1532282082854830202",  # 租房案件-搜尋 (private)
+]
+
+# Never accept DMs -- this bridge only ever operates inside the three search
+# channels above, matching the deterministic /house and /auction commands'
+# own channel scoping.
+allow_dm = false
+
+# Approved guild members verified through the bounded Discord REST
+# bootstrap check. runtime_config.py still fails closed if this becomes
+# empty rather than silently defaulting to every channel member.
+allowed_users = [
+  "843428445802725388",
+  "1149306408085508106",
+]
+
+[agent]
+# A pure stdio<->TCP relay, not codex-acp itself (which runs only in the
+# sidecar container -- see openab/sidecar/bridge-server.mjs). This gateway
+# container has no shell access to the sidecar and no way to run anything
+# on it besides relaying ACP JSON-RPC bytes over one TCP connection -- see
+# openab/gateway/bridge-client.mjs's own docstring for the full security
+# reasoning. ACP_SIDECAR_HOST/PORT are plain, non-secret configuration
+# (the sidecar's DNS name on the internal Compose network + its listen
+# port), expanded natively by OpenAB from its own process environment at
+# startup (the same mechanism config-kiro.toml/config-nvidia-lab.toml use
+# in the sibling discord-personal-assistant project for their own non-secret
+# [agent].env values) -- never a placeholder this repo's own tooling
+# renders, since there is nothing secret here to protect.
+command = "/opt/radar-agent/bridge-client.mjs"
+working_dir = "/workspace/radar-agent"
+env = { ACP_SIDECAR_HOST = "${ACP_SIDECAR_HOST}", ACP_SIDECAR_PORT = "${ACP_SIDECAR_PORT}" }
+
+[pool]
+# One session at a time: this is a low-traffic, three-channel Q&A surface,
+# not a high-concurrency service -- keep the blast radius of any single
+# runaway/looping session small and easy to reason about.
+max_sessions = 1
+session_ttl_hours = 4
+
+[reactions]
+enabled = true
+remove_after_reply = false

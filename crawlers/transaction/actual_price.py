@@ -13,6 +13,7 @@ class ActualTransactionRecord:
     building_area_ping: float
     address: str | None = None
     building_type: str | None = None
+    source_id: str | None = None
 
 
 @dataclass(frozen=True)
