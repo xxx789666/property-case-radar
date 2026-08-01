@@ -30,6 +30,9 @@ class Property(Base, TimestampMixin):
     usage: Mapped[str | None] = mapped_column(String(64))
     has_parking: Mapped[bool | None] = mapped_column(Boolean)
     listed_date: Mapped[date | None] = mapped_column(Date)
+    # One-time inventory seeding/scope expansion is searchable inventory,
+    # but must not be presented as a newly listed property.
+    is_backfill: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     market_unit_price_twd: Mapped[int | None] = mapped_column(BigInteger)
@@ -62,4 +65,6 @@ class PropertySubscription(Base, TimestampMixin):
     min_building_area_ping: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     max_age_years: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
     min_discount_rate: Mapped[Decimal | None] = mapped_column(Numeric(7, 4))
+    property_type: Mapped[str | None] = mapped_column(String(32))
+    channel_id: Mapped[int | None] = mapped_column(BigInteger)
     active: Mapped[bool] = mapped_column(Boolean, default=True)

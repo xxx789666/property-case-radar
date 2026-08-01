@@ -5,17 +5,22 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "taiwan-real-estate-radar"
 version = "0.1.0"
-description = "Taiwan real-estate sale listing radar v1"
+description = "Taiwan real-estate sale + auction (法拍屋) case radar v1"
 requires-python = ">=3.11"
 dependencies = [
   "alembic>=1.13,<2",
   "apscheduler>=3.10,<4",
+  "beautifulsoup4>=4.12,<5",
   "discord.py>=2.4,<3",
   "fastapi>=0.115,<1",
   "httpx>=0.27,<1",
+  "playwright>=1.49,<2",
   "pydantic-settings>=2.5,<3",
   "psycopg[binary]>=3.2,<4",
+  "pypdf>=5.0,<6",
+  "requests>=2.32,<3",
   "sqlalchemy>=2.0,<3",
+  "truststore>=0.10,<1",
   "uvicorn[standard]>=0.30,<1",
 ]
 

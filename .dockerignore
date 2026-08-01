@@ -1,0 +1,37 @@
+# Minimal build-context exclusion list. openab/Dockerfile.radar-agent's
+# build context is the repo root (docker-compose.yml's `context: .`) --
+# without this file, `docker build`/`docker compose build` sends the
+# entire working tree (including git history, any local .env, gitignored
+# openab/.local/ secrets, and every developer's __pycache__/venv) to the
+# Docker daemon, even though the Dockerfile's own COPY instructions are
+# selective about what actually lands in an image layer. Reproducible,
+# secret-free build context, not merely a reproducible image.
+
+.git/
+.gitignore
+
+# Never send real secrets, even though nothing in the Dockerfile ever
+# COPYs these paths -- the point is these bytes should never even leave
+# the host into the build context/daemon.
+.env
+openab/.local/
+
+# Caches/bytecode/venvs -- never needed in the build context, and their
+# contents can vary per developer machine/run, which is exactly what
+# "reproducible build context" means to exclude.
+**/__pycache__/
+**/*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# Local SQLite databases and other scratch artifacts developers may have
+# sitting in the working tree.
+*.db
+
+# Editor/OS cruft.
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store

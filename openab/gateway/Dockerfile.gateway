@@ -1,0 +1,57 @@
+# Property Case Radar Discord LLM bridge -- GATEWAY container. Runs
+# OpenAB and bridge-client.mjs only: holds the Discord token, nothing
+# else. No database credential, no Codex auth, and no Radar application
+# code (crawlers/repositories/scoring/etc.) lives in this image at all --
+# see openab/sidecar/Dockerfile.sidecar for the container that actually
+# runs codex-acp and the read-only query tool. Pinned by immutable digest
+# (resolved from ghcr.io/openabdev/openab:0.10.0-beta.2-codex on
+# 2026-07-24) so a registry retag or a later beta cannot silently change
+# what this container runs.
+FROM ghcr.io/openabdev/openab@sha256:6e9c43e7acfa02f3886b22a209f1140842fc01807927b77a1f55cb0644393b9c
+
+# Build-time root is unrelated to runtime security (see the final USER
+# below: PID 1 and bridge-client.mjs both run as this fixed unprivileged
+# user for the container's entire lifetime, reinforced at the Compose
+# level by `user:`/`cap_drop: [ALL]`/`no-new-privileges`/`read_only: true`).
+USER root
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Only python3 is installed here -- for runtime_config.py (TOML render +
+# fail-closed checks; Node has no built-in TOML parser, and this repo
+# already standardizes that logic in Python). bridge-client.mjs itself
+# uses only Node core modules already in the base image, so nothing else
+# is installed. Frozen Debian snapshot + github-cli.list removal, same as
+# the sidecar image -- see openab/sidecar/Dockerfile.sidecar for the
+# rationale and the live verification that this apt configuration
+# actually resolves/installs correctly.
+RUN rm -f /etc/apt/sources.list.d/github-cli.list \
+    && sed -i \
+        -e 's|^URIs: http://deb.debian.org/debian$|URIs: http://snapshot.debian.org/archive/debian/20260713T000000Z|' \
+        -e 's|^URIs: http://deb.debian.org/debian-security$|URIs: http://snapshot.debian.org/archive/debian-security/20260713T000000Z|' \
+        /etc/apt/sources.list.d/debian.sources \
+    && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends python3=3.13.5-1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /opt/radar-agent /workspace/radar-agent \
+    && install -d -o node -g node -m 0700 /run/radar-agent /home/node/.openab
+
+COPY --chown=node:node openab/gateway/bridge-client.mjs /opt/radar-agent/bridge-client.mjs
+COPY --chown=node:node openab/gateway/runtime_config.py /opt/radar-agent/runtime_config.py
+COPY --chown=node:node openab/gateway/container-entrypoint.sh /opt/radar-agent/container-entrypoint.sh
+
+RUN chmod 0755 \
+        /opt/radar-agent/bridge-client.mjs \
+        /opt/radar-agent/container-entrypoint.sh \
+    && node --check /opt/radar-agent/bridge-client.mjs \
+    && python3 -m py_compile /opt/radar-agent/runtime_config.py \
+    && command -v openab \
+    && command -v node
+
+# No root at any point during the container's actual runtime: this is the
+# same fixed unprivileged user (uid/gid 1000, "node" -- the base image's
+# own default) PID 1 (container-entrypoint.sh -> openab) and
+# bridge-client.mjs (openab's spawned [agent] command) both run as.
+USER node
+ENTRYPOINT ["/opt/radar-agent/container-entrypoint.sh"]

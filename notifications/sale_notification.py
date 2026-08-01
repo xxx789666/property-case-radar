@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Protocol
+from typing import Callable, Protocol
 
 import discord
 from database.models.sale import Property
@@ -15,7 +15,9 @@ class SaleNotification:
 
 
 class MessageChannel(Protocol):
-    async def send(self, *, embed: discord.Embed) -> object: ...
+    async def send(
+        self, *, embed: discord.Embed, content: str | None = None
+    ) -> object: ...
 
 
 class SaleNotificationRouter:
@@ -26,21 +28,42 @@ class SaleNotificationRouter:
         price_drop_channel: MessageChannel,
         high_score_channel: MessageChannel,
         high_score_threshold: int = 80,
+        channel_factory: Callable[[int], MessageChannel] | None = None,
     ):
         self.new_channel = new_channel
         self.price_drop_channel = price_drop_channel
         self.high_score_channel = high_score_channel
         self.high_score_threshold = high_score_threshold
+        self.channel_factory = channel_factory
 
-    async def publish(self, item: Property, *, created: bool, price_dropped: bool) -> list[str]:
+    def subscription_channel(self, channel_id: int) -> MessageChannel:
+        if self.channel_factory is None:
+            raise RuntimeError("subscription channel routing is not configured")
+        return self.channel_factory(channel_id)
+
+    async def publish(
+        self,
+        item: Property,
+        *,
+        created: bool,
+        price_dropped: bool,
+        send_new: bool = True,
+        send_high_score: bool = True,
+    ) -> list[str]:
         kinds: list[str] = []
-        if created:
+        genuine_new = created and not item.is_backfill
+        if genuine_new and send_new:
             await self._send(self.new_channel, item, "new")
             kinds.append("new")
         if price_dropped:
             await self._send(self.price_drop_channel, item, "price_drop")
             kinds.append("price_drop")
-        if item.score is not None and item.score >= self.high_score_threshold:
+        if (
+            send_high_score
+            and (genuine_new or price_dropped)
+            and item.score is not None
+            and item.score >= self.high_score_threshold
+        ):
             await self._send(self.high_score_channel, item, "high_score")
             kinds.append("high_score")
         return kinds
@@ -73,11 +96,21 @@ def build_sale_notification(item: Property, *, kind: str = "new") -> SaleNotific
         if item.market_unit_price_twd
         else "尚無行情"
     )
-    description = "\n".join(
+    area_label = "土地坪數" if item.building_type == "土地" else "建坪"
+    area_value = (
+        item.land_area_ping
+        if item.building_type == "土地" and item.land_area_ping is not None
+        else item.building_area_ping
+    )
+    lines = [
+        f"區域：{item.city}{item.district}",
+        f"總價：{format_twd_wan(item.total_price_twd)}",
+    ]
+    if item.building_type == "土地":
+        lines.append(f"土地類型：{item.usage or '資料未提供'}")
+    lines.extend(
         [
-            f"區域：{item.city}{item.district}",
-            f"總價：{format_twd_wan(item.total_price_twd)}",
-            f"建坪：{item.building_area_ping} 坪",
+            f"{area_label}：{area_value} 坪",
             f"掛牌單價：{item.unit_price_per_ping_twd / 10_000:,.1f} 萬／坪",
             f"區域成交均價：{market}",
             f"低於行情：{format_discount(item.discount_rate)}",
@@ -85,4 +118,5 @@ def build_sale_notification(item: Property, *, kind: str = "new") -> SaleNotific
             f"來源：{item.source}",
         ]
     )
+    description = "\n".join(lines)
     return SaleNotification(title=title, description=description, url=item.url, score=item.score)
