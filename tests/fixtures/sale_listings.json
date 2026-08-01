@@ -1,0 +1,22 @@
+[
+  {
+    "source": "fixture",
+    "source_property_id": "TY-ZL-001",
+    "url": "https://example.invalid/listings/TY-ZL-001",
+    "city": "桃園市",
+    "district": "中壢區",
+    "address": "測試路 1 號",
+    "total_price_twd": 12800000,
+    "unit_price_per_ping_twd": 351000,
+    "building_area_ping": "36.5",
+    "land_area_ping": "8.2",
+    "age_years": "12",
+    "floor": "8",
+    "total_floors": 15,
+    "layout": "3房2廳2衛",
+    "building_type": "住宅",
+    "usage": "住家用",
+    "has_parking": true,
+    "listed_date": "2026-07-20"
+  }
+]
