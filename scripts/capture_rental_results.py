@@ -276,19 +276,30 @@ def resolve_section_id(
     district: str,
     timeout_ms: int,
 ) -> int:
-    page.goto(
-        result_url(region_id, 1),
-        wait_until="domcontentloaded",
-        timeout=timeout_ms,
-    )
-    locator = page.locator("button.section.filter-item").filter(has_text=district)
-    locator.first.wait_for(state="attached", timeout=min(timeout_ms, 12_000))
-    locator.first.click()
-    page.wait_for_timeout(500)
-    values = parse_qs(urlparse(page.url).query).get("section", [])
-    if not values or not values[0].isdigit():
-        raise RuntimeError(f"591 section ID not found for {district}")
-    return int(values[0])
+    url = result_url(region_id, 1)
+    for attempt in range(2):
+        page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+        locator = page.locator("button.section.filter-item").filter(
+            has_text=district
+        )
+        locator.first.wait_for(state="visible", timeout=min(timeout_ms, 12_000))
+        # The Vue controls can be visible before their click handlers are
+        # hydrated. A short readiness pause prevents a visually successful
+        # checkbox click that never writes the section query parameter.
+        page.wait_for_timeout(1_000 if attempt == 0 else 2_000)
+        locator.first.click()
+        try:
+            page.wait_for_url(
+                re.compile(r"[?&]section=\d+"),
+                timeout=min(timeout_ms, 5_000),
+            )
+        except Exception:
+            if attempt == 0:
+                continue
+        values = parse_qs(urlparse(page.url).query).get("section", [])
+        if values and values[0].isdigit():
+            return int(values[0])
+    raise RuntimeError(f"591 section ID not found for {district}")
 
 
 def capture_city(city: str, region_id: int, args: argparse.Namespace) -> tuple[list[dict], dict]:

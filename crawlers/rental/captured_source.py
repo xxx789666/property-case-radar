@@ -42,13 +42,14 @@ class CapturedRentalCrawler(RentalCrawler):
         self.timeout_seconds = timeout_seconds
         self.json_retention_days = json_retention_days
         self.last_health_error: str | None = None
+        self.last_failed_cities: tuple[str, ...] = ()
 
     def set_focus_districts(self, values: list[tuple[str, str]]) -> None:
         self.focus_districts = tuple(
             sorted({f"{city}|{district}" for city, district in values})
         )
 
-    async def fetch(self) -> list[RentalListing]:
+    async def _capture_payload(self, *, city: str | None = None) -> dict:
         if not self.script_path.is_file():
             raise RentalCaptureError(f"rental capture script not found: {self.script_path}")
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -66,6 +67,7 @@ class CapturedRentalCrawler(RentalCrawler):
             "--focus-max-pages", str(self.focus_max_pages),
             "--workers", str(self.workers),
             "--headless",
+            *(("--city", city) if city else ()),
             *focus_args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -82,7 +84,10 @@ class CapturedRentalCrawler(RentalCrawler):
             detail = stderr.decode("utf-8", errors="replace") or stdout_text
             raise RentalCaptureError(detail[-2000:])
         path = result_path(stdout_text)
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _listings_from_payload(payload: dict) -> list[RentalListing]:
         policy = payload.get("policy", {})
         if policy != {
             "public_pages_only": True,
@@ -92,11 +97,6 @@ class CapturedRentalCrawler(RentalCrawler):
             "business_rental_kinds": [5, 6, 12, 7],
         }:
             raise RentalCaptureError("rental capture policy is invalid")
-        failed = [item["city"] for item in payload.get("cities", []) if item.get("status") != "ok"]
-        self.last_health_error = (
-            "591 租屋部分抓取失敗／待重試：" + "、".join(failed)
-            if failed else None
-        )
         listings: list[RentalListing] = []
         for raw in payload.get("listings", []):
             try:
@@ -105,11 +105,54 @@ class CapturedRentalCrawler(RentalCrawler):
                 listings.append(RentalListing(**values))
             except (TypeError, ValueError, ArithmeticError):
                 continue
+        if payload.get("listings") and not listings:
+            raise RentalCaptureError("all rental cards failed validation")
+        return listings
+
+    async def fetch(self) -> list[RentalListing]:
+        payload = await self._capture_payload()
+        failed = tuple(
+            item["city"]
+            for item in payload.get("cities", [])
+            if item.get("status") != "ok"
+        )
+        self.last_failed_cities = failed
+        self.last_health_error = (
+            "591 租屋部分抓取失敗／待重試：" + "、".join(failed)
+            if failed else None
+        )
+        listings = self._listings_from_payload(payload)
         remove_expired_capture_json(
             self.output_dir, retention_days=self.json_retention_days
         )
-        if payload.get("listings") and not listings:
-            raise RentalCaptureError("all rental cards failed validation")
+        return listings
+
+    async def retry_failed_cities(self, cities: tuple[str, ...]) -> list[RentalListing]:
+        """Recapture only failed cities and retain the still-failing subset."""
+
+        listings: list[RentalListing] = []
+        unresolved: list[str] = []
+        for city in cities:
+            try:
+                payload = await self._capture_payload(city=city)
+                city_failed = any(
+                    item.get("status") != "ok"
+                    for item in payload.get("cities", [])
+                )
+                if city_failed:
+                    unresolved.append(city)
+                    continue
+                listings.extend(self._listings_from_payload(payload))
+            except Exception:  # noqa: BLE001 - other cities must still retry
+                unresolved.append(city)
+        self.last_failed_cities = tuple(unresolved)
+        self.last_health_error = (
+            "591 租屋部分抓取失敗／待重試：" + "、".join(unresolved)
+            if unresolved else None
+        )
+        remove_expired_capture_json(
+            self.output_dir, retention_days=self.json_retention_days
+        )
         return listings
 
 

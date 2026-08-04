@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from unittest.mock import AsyncMock
 
 from crawlers.rental.base import RentalListing
 from crawlers.rental.captured_source import CapturedRentalCrawler, result_path
@@ -166,3 +167,40 @@ def test_business_detail_url_keeps_business_host() -> None:
     assert capture.normalize_detail_url(
         "https://business.591.com.tw/rent/21704115?from=search"
     ) == "https://business.591.com.tw/rent/21704115"
+
+
+async def test_retry_failed_cities_keeps_only_unresolved_cities(
+    tmp_path: Path,
+) -> None:
+    crawler = CapturedRentalCrawler("capture.py", output_dir=tmp_path)
+    policy = {
+        "public_pages_only": True,
+        "login_used": False,
+        "access_control_bypassed": False,
+        "rental_kinds": [0, 24],
+        "business_rental_kinds": [5, 6, 12, 7],
+    }
+    crawler._capture_payload = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            {
+                "policy": policy,
+                "cities": [{"city": "桃園市", "status": "ok"}],
+                "listings": [],
+            },
+            {
+                "policy": policy,
+                "cities": [
+                    {"city": "新竹縣", "status": "error", "error": "timeout"}
+                ],
+                "listings": [],
+            },
+        ]
+    )
+
+    listings = await crawler.retry_failed_cities(("桃園市", "新竹縣"))
+
+    assert listings == []
+    assert crawler.last_failed_cities == ("新竹縣",)
+    assert crawler.last_health_error == "591 租屋部分抓取失敗／待重試：新竹縣"
+    assert crawler._capture_payload.await_args_list[0].kwargs == {"city": "桃園市"}
+    assert crawler._capture_payload.await_args_list[1].kwargs == {"city": "新竹縣"}

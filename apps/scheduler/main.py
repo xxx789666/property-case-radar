@@ -17,7 +17,10 @@ from apps.services.sale_notifier import live_sale_notifier
 from apps.services.sale_pipeline import ingest_sale_listings, rescore_sale_inventory
 from apps.services.sale_daily_summary import deliver_daily_sale_summary
 from apps.services.sale_status_lifecycle import reconcile_stale_sale_listings
-from apps.services.rental_daily_summary import deliver_daily_rental_summary
+from apps.services.rental_daily_summary import (
+    deliver_daily_rental_summary,
+    update_daily_rental_summary,
+)
 from apps.services.rental_notifier import live_rental_notifier
 from apps.services.rental_pipeline import ingest_rental_listings
 from apps.services.rental_status_lifecycle import reconcile_stale_rental_listings
@@ -39,6 +42,7 @@ from crawlers.sale.captured_status import (
 from crawlers.sale.composite import CompositeSaleCrawler
 from crawlers.sale.housefun_source import HousefunSaleCrawler, HousefunStatusVerifier
 from crawlers.rental.captured_source import CapturedRentalCrawler
+from crawlers.rental.base import RentalCrawler, RentalListing
 from crawlers.rental.captured_status import (
     CapturedRentalStatusVerifier,
     RentalStatusVerificationError,
@@ -63,6 +67,15 @@ class _RawAnnouncementBatchSource(AuctionAnnouncementSource):
 
     async def fetch(self) -> list[RawAnnouncement]:
         return list(self._announcements)
+
+
+class _RentalListingBatchSource(RentalCrawler):
+    def __init__(self, listings: list[RentalListing]) -> None:
+        super().__init__()
+        self._listings = listings
+
+    async def fetch(self) -> list[RentalListing]:
+        return list(self._listings)
 
 
 def build_scheduler(
@@ -302,13 +315,83 @@ def make_live_rental_job(
                     high_score_threshold=settings.rental_high_score_threshold,
                     high_score_digest_limit=settings.rental_high_score_digest_limit,
                 )
+                failed_cities = tuple(crawler.last_failed_cities)
+                summary = None
                 if notifier is not None and not baseline:
                     summary = await deliver_daily_rental_summary(
                         session,
                         notifier.new_channel,
                         settings.discord_rental_new_channel_id,
+                        failed_regions=failed_cities,
                     )
                     logger.info("rental daily summary delivery finished: %s", summary)
+
+                retry_method = getattr(crawler, "retry_failed_cities", None)
+                if failed_cities:
+                    update_system_alert(
+                        settings,
+                        key="rental-source:591",
+                        failing=True,
+                        title="租屋來源 591",
+                        detail=crawler.last_health_error or "部分縣市抓取失敗／待重試",
+                    )
+                if failed_cities and callable(retry_method):
+                    for retry_round in range(
+                        1, settings.rental_failed_retry_rounds + 1
+                    ):
+                        if not failed_cities:
+                            break
+                        logger.warning(
+                            "waiting %s minutes before rental failed-city retry %s/%s: %s",
+                            settings.rental_failed_retry_delay_minutes,
+                            retry_round,
+                            settings.rental_failed_retry_rounds,
+                            ", ".join(failed_cities),
+                        )
+                        await asyncio.sleep(
+                            settings.rental_failed_retry_delay_minutes * 60
+                        )
+                        retry_listings = await retry_method(failed_cities)
+                        if retry_listings:
+                            retry_result = await ingest_rental_listings(
+                                _RentalListingBatchSource(retry_listings),
+                                session,
+                                notifier=notifier if not baseline else None,
+                                notify_new=False,
+                                backfill=baseline,
+                                high_score_threshold=(
+                                    settings.rental_high_score_threshold
+                                ),
+                                high_score_digest_limit=(
+                                    settings.rental_high_score_digest_limit
+                                ),
+                            )
+                            logger.info(
+                                "rental failed-city retry %s/%s ingest finished: %s",
+                                retry_round,
+                                settings.rental_failed_retry_rounds,
+                                retry_result,
+                            )
+                        failed_cities = tuple(crawler.last_failed_cities)
+                        if (
+                            notifier is not None
+                            and not baseline
+                            and summary is not None
+                            and summary.message_id is not None
+                        ):
+                            update_report = await update_daily_rental_summary(
+                                session,
+                                notifier.new_channel,
+                                summary.message_id,
+                                day=summary.day,
+                                failed_regions=failed_cities,
+                            )
+                            logger.info(
+                                "rental daily summary updated after retry %s/%s: %s",
+                                retry_round,
+                                settings.rental_failed_retry_rounds,
+                                update_report,
+                            )
             if status_verifier is not None:
                 try:
                     for source in ("591-rent", "591-business"):
@@ -329,9 +412,12 @@ def make_live_rental_job(
             update_system_alert(
                 settings,
                 key="rental-source:591",
-                failing=crawler.last_health_error is not None,
+                failing=bool(crawler.last_failed_cities),
                 title="租屋來源 591",
-                detail=crawler.last_health_error or "抓取正常",
+                detail=(
+                    crawler.last_health_error
+                    or "失敗縣市補抓完成，591 租屋來源已恢復"
+                ),
             )
             logger.info("rental crawl finished: %s baseline=%s", result, baseline)
 
