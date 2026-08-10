@@ -24,6 +24,11 @@ from apps.services.system_alerts import (
     update_system_alert,
 )
 from scripts.system_watchdog import latest_backup_is_fresh
+from scripts.umi_ocr_service import (
+    restart_umi_ocr,
+    umi_ocr_process_counts,
+    umi_ocr_ready,
+)
 
 SCHEDULER_TASK = "Property Case Radar Scheduler"
 GATEWAY_TASK = "Property Case Radar OpenAB Gateway"
@@ -76,6 +81,17 @@ def windows_task_state(name: str) -> str:
         "-ErrorAction SilentlyContinue; "
         "if ($null -eq $task) { 'Missing' } else { $task.State.ToString() }"
     )
+
+
+def python_script_running(script_path: str | Path) -> bool:
+    filename = Path(script_path).name.replace("'", "''")
+    return powershell(
+        "$process = Get-CimInstance Win32_Process | Where-Object { "
+        "$_.Name -like 'python*.exe' -and "
+        f"$_.CommandLine -like '*{filename}*' "
+        "} | Select-Object -First 1; "
+        "if ($null -eq $process) { 'False' } else { 'True' }"
+    ) == "True"
 
 
 def restart_windows_task(name: str) -> None:
@@ -292,6 +308,22 @@ def run_self_healer() -> int:
     def backup_healthy() -> bool:
         return latest_backup_is_fresh(settings.database_backup_dir)
 
+    def umi_healthy() -> bool:
+        if python_script_running(settings.auction_capture_script):
+            # Umi's HTTP server is single-worker. An image probe while the
+            # crawler is recognizing a CAPTCHA can time out and would make the
+            # healer kill a healthy engine mid-county. During active capture,
+            # use non-invasive process/TCP liveness instead.
+            umi_count, paddle_count = umi_ocr_process_counts(
+                settings.auction_capture_ocr_executable
+            )
+            return umi_count == 1 and paddle_count >= 1
+        return umi_ocr_ready(
+            settings.auction_capture_ocr_url,
+            timeout=10,
+            executable=settings.auction_capture_ocr_executable,
+        )
+
     components = (
         (
             "scheduler",
@@ -320,6 +352,13 @@ def run_self_healer() -> int:
             backup_healthy,
             lambda: start_windows_task(BACKUP_TASK),
             180,
+        ),
+        (
+            "umi-ocr",
+            "Umi-OCR API",
+            umi_healthy,
+            lambda: restart_umi_ocr(settings.auction_capture_ocr_executable),
+            int(settings.auction_capture_ocr_startup_timeout_seconds),
         ),
     )
 

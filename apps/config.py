@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     auction_capture_ocr_executable: Path = Path(
         r"D:\Umi-OCR_Paddle_v2.1.5\Umi-OCR.exe"
     )
-    auction_capture_ocr_startup_timeout_seconds: int = Field(default=45, ge=5, le=300)
+    auction_capture_ocr_startup_timeout_seconds: int = Field(default=120, ge=5, le=300)
     auction_capture_json_retention_days: int = Field(default=30, ge=1, le=365)
     auction_failed_retry_delay_minutes: int = Field(default=15, ge=1, le=120)
     auction_failed_retry_rounds: int = Field(default=3, ge=0, le=10)

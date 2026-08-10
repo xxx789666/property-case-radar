@@ -1,7 +1,11 @@
 from datetime import UTC, datetime, timedelta
 
 from apps.config import Settings
-from scripts.scheduler_self_healer import heal_component, reserve_attempt
+from scripts.scheduler_self_healer import (
+    heal_component,
+    python_script_running,
+    reserve_attempt,
+)
 
 
 def make_settings(tmp_path, **overrides):
@@ -96,3 +100,14 @@ def test_successful_repair_clears_attempt_state(monkeypatch, tmp_path):
     assert "scheduler" not in state
     assert "已恢復" in notifications[0]
     assert alerts[-1]["failing"] is False
+
+
+def test_python_script_running_filters_to_python_process(monkeypatch):
+    monkeypatch.setattr(
+        "scripts.scheduler_self_healer.powershell",
+        lambda script, **_kwargs: (
+            "True" if "capture_auction_results.py" in script else "False"
+        ),
+    )
+
+    assert python_script_running("D:/capture_auction_results.py")

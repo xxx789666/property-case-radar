@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
-import httpx
 from pypdf import PdfReader
+from scripts.umi_ocr_service import launch_umi_ocr, umi_ocr_ready
 
 from crawlers.capture_retention import remove_expired_capture_json
 from crawlers.auction.court_crawler import (
@@ -248,35 +248,16 @@ class CapturedAuctionAnnouncementSource(AuctionAnnouncementSource):
         )
 
     async def _ocr_is_ready(self) -> bool:
-        try:
-            async with httpx.AsyncClient(timeout=2) as client:
-                response = await client.post(self.umi_ocr_url, json={"base64": ""})
-            if response.status_code != 200:
-                return False
-            payload = response.json()
-            return isinstance(payload, dict) and "code" in payload
-        except (httpx.HTTPError, ValueError):
-            return False
+        return await asyncio.to_thread(
+            umi_ocr_ready,
+            self.umi_ocr_url,
+            10,
+            executable=self.umi_ocr_executable,
+        )
 
     def _launch_ocr(self) -> None:
-        startupinfo = None
-        creationflags = 0
-        if os.name == "nt":
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = subprocess.SW_HIDE
-            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
         try:
-            subprocess.Popen(
-                [str(self.umi_ocr_executable)],
-                cwd=str(self.umi_ocr_executable.parent),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                startupinfo=startupinfo,
-                creationflags=creationflags,
-                close_fds=True,
-            )
+            launch_umi_ocr(self.umi_ocr_executable)
         except OSError as exc:
             raise AuctionCaptureError(
                 f"failed to start Umi-OCR at {self.umi_ocr_executable}: {exc}"

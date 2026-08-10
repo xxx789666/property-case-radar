@@ -7,6 +7,7 @@ New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
 Set-Location -LiteralPath $repositoryRoot
 
 $env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = $utf8NoBom
 $OutputEncoding = $utf8NoBom
