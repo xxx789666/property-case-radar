@@ -139,8 +139,13 @@ def umi_ocr_ready(
         response_ok = isinstance(result, dict) and result.get("code") in {100, 101}
         if not response_ok:
             return False
-        if executable is not None and umi_ocr_process_counts(executable) != (1, 1):
-            return False
+        if executable is not None:
+            umi_count, paddle_count = umi_ocr_process_counts(executable)
+            # Umi may retain more than one Paddle worker after switching OCR
+            # models. The successful API response above is authoritative;
+            # extra healthy workers must not trigger a restart loop.
+            if umi_count != 1 or paddle_count < 1:
+                return False
         return True
     except (
         OSError,

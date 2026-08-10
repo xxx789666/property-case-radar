@@ -37,6 +37,22 @@ def test_health_probe_uses_real_image_and_english_model(monkeypatch):
     assert captured["timeout"] == 7
 
 
+def test_health_probe_accepts_multiple_paddle_workers(monkeypatch):
+    monkeypatch.setattr(
+        "scripts.umi_ocr_service.urllib.request.urlopen",
+        lambda *_args, **_kwargs: FakeResponse(),
+    )
+    monkeypatch.setattr(
+        "scripts.umi_ocr_service.umi_ocr_process_counts",
+        lambda _executable: (1, 2),
+    )
+
+    assert umi_ocr_ready(
+        "http://127.0.0.1:1224/api/ocr",
+        executable="Umi-OCR.exe",
+    )
+
+
 def test_launch_forces_utf8_environment(monkeypatch, tmp_path: Path):
     executable = tmp_path / "Umi-OCR.exe"
     executable.write_bytes(b"")
