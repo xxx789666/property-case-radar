@@ -68,3 +68,4 @@ def test_partial_city_is_loaded_and_exposed_as_health_error(tmp_path) -> None:
 
     assert len(listings) == 1
     assert crawler.last_health_error == "591 部分抓取失敗／待重試：新竹縣、金門縣"
+    assert crawler.last_failed_cities == ("新竹縣", "金門縣")

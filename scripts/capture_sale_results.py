@@ -267,15 +267,16 @@ def discover_land_sections(
     page,
     region_id: int,
     args: argparse.Namespace,
-) -> list[tuple[str, int]]:
+) -> list[tuple[str, int | None]]:
     """Read 591's public district filters and resolve their section IDs.
 
     The public page does not expose section IDs in the checkbox markup. Clicking
     a district updates the public URL with ``section=<id>``; no private endpoint
     or access-control bypass is used.
     """
+    base_url = land_result_url(region_id, 1)
     page.goto(
-        land_result_url(region_id, 1),
+        base_url,
         wait_until="domcontentloaded",
         timeout=args.timeout_ms,
     )
@@ -286,25 +287,47 @@ def discover_land_sections(
     labels = page.locator("label.t5-checkbox--housing").all_inner_texts()
     district_names = district_names_from_labels(labels)
 
-    sections: list[tuple[str, int]] = []
+    sections: list[tuple[str, int | None]] = []
+    needs_citywide_fallback = False
     for district in district_names:
+        # The 591 SPA replaces the checkbox node after applying a district.
+        # Clicking the same label again can therefore target a freshly-rendered
+        # unchecked node and leave ``section`` in the URL forever. Reset to the
+        # unfiltered public page before resolving each district instead.
+        if parse_qs(urlparse(page.url).query).get("section"):
+            page.goto(
+                base_url,
+                wait_until="domcontentloaded",
+                timeout=args.timeout_ms,
+            )
+            page.locator("label.t5-checkbox--housing").first.wait_for(
+                state="attached",
+                timeout=min(args.timeout_ms, 12_000),
+            )
         checkbox = page.get_by_text(district, exact=True).first
         checkbox.click()
-        page.wait_for_function(
-            """() => new URL(window.location.href).searchParams.has("section")""",
-            timeout=args.timeout_ms,
-        )
+        try:
+            page.wait_for_function(
+                """() => new URL(window.location.href).searchParams.has("section")""",
+                timeout=min(args.timeout_ms, 8_000),
+            )
+        except Exception:
+            # Some small/offshore districts are rendered as options even when
+            # 591 has no section mapping for them. Keep the city healthy and
+            # cover those records through one unfiltered city-level pass.
+            needs_citywide_fallback = True
+            print(
+                f"  land {district}: no section mapping; using citywide fallback",
+                file=sys.stderr,
+            )
+            continue
         section_values = parse_qs(urlparse(page.url).query).get("section", [])
         if section_values and section_values[0].isdigit():
             sections.append((district, int(section_values[0])))
-        checkbox = page.get_by_text(district, exact=True).first
-        checkbox.click()
-        page.wait_for_function(
-            """() => !new URL(window.location.href).searchParams.has("section")""",
-            timeout=args.timeout_ms,
-        )
-    if not sections:
-        raise RuntimeError("591 land district filters did not expose any section IDs")
+        else:
+            needs_citywide_fallback = True
+    if needs_citywide_fallback or not sections:
+        sections.append(("全區備援", None))
     return sections
 
 

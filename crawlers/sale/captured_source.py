@@ -45,9 +45,9 @@ class CapturedSaleCrawler(SaleCrawler):
         self.timeout_seconds = timeout_seconds
         self.json_retention_days = json_retention_days
         self.last_health_error: str | None = None
+        self.last_failed_cities: tuple[str, ...] = ()
 
-    async def fetch(self) -> list[SaleListing]:
-        self.last_health_error = None
+    async def _capture_result_path(self, *, city: str | None = None) -> Path:
         if not self.script_path.is_file():
             raise SaleCaptureError(f"sale capture script not found: {self.script_path}")
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -62,8 +62,9 @@ class CapturedSaleCrawler(SaleCrawler):
             str(self.workers),
             "--headless",
         ]
-        if self.city:
-            arguments.extend(["--city", self.city])
+        selected_city = city or self.city
+        if selected_city:
+            arguments.extend(["--city", selected_city])
         process = await asyncio.create_subprocess_exec(
             *arguments,
             stdout=asyncio.subprocess.PIPE,
@@ -84,7 +85,12 @@ class CapturedSaleCrawler(SaleCrawler):
             raise SaleCaptureError(
                 f"sale capture exited with status {process.returncode}: {detail[-2000:]}"
             )
-        result_path = _result_path_from_stdout(stdout_text)
+        return _result_path_from_stdout(stdout_text)
+
+    async def fetch(self) -> list[SaleListing]:
+        self.last_health_error = None
+        self.last_failed_cities = ()
+        result_path = await self._capture_result_path()
         listings = self.load_result(result_path)
         try:
             removed = remove_expired_capture_json(
@@ -94,6 +100,33 @@ class CapturedSaleCrawler(SaleCrawler):
             logger.info("sale capture JSON retention removed %s expired files", removed)
         except OSError:
             logger.exception("sale capture JSON retention cleanup failed")
+        return listings
+
+    async def retry_failed_cities(self, cities: tuple[str, ...]) -> list[SaleListing]:
+        """Recapture incomplete cities and retain only the unresolved subset."""
+
+        listings: list[SaleListing] = []
+        unresolved: list[str] = []
+        for city in cities:
+            try:
+                result_path = await self._capture_result_path(city=city)
+                city_listings = self.load_result(result_path)
+                listings.extend(city_listings)
+                if self.last_failed_cities:
+                    unresolved.append(city)
+            except Exception:  # noqa: BLE001 - retry every remaining city
+                logger.exception("sale city retry failed: %s", city)
+                unresolved.append(city)
+
+        self.last_failed_cities = tuple(unresolved)
+        self.last_health_error = (
+            "591 部分抓取失敗／待重試：" + "、".join(unresolved)
+            if unresolved
+            else None
+        )
+        remove_expired_capture_json(
+            self.output_dir, retention_days=self.json_retention_days
+        )
         return listings
 
     def load_result(self, result_path: str | Path) -> list[SaleListing]:
@@ -120,6 +153,7 @@ class CapturedSaleCrawler(SaleCrawler):
             for city in payload.get("cities", [])
             if isinstance(city, dict) and city.get("status") != "ok"
         ]
+        self.last_failed_cities = tuple(incomplete)
         if incomplete:
             self.last_health_error = (
                 "591 部分抓取失敗／待重試：" + "、".join(incomplete)

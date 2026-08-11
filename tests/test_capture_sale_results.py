@@ -33,3 +33,40 @@ def test_capture_defaults_to_bounded_parallel_counties() -> None:
     args = capture.build_parser().parse_args([])
 
     assert args.workers == 4
+
+
+def test_land_section_discovery_falls_back_when_option_has_no_mapping() -> None:
+    class FakeLocator:
+        @property
+        def first(self):
+            return self
+
+        def wait_for(self, **_kwargs) -> None:
+            return None
+
+        def all_inner_texts(self) -> list[str]:
+            return ["大安區"]
+
+        def click(self) -> None:
+            return None
+
+    class FakePage:
+        url = ""
+
+        def goto(self, url: str, **_kwargs) -> None:
+            self.url = url
+
+        def locator(self, _selector: str) -> FakeLocator:
+            return FakeLocator()
+
+        def get_by_text(self, _text: str, **_kwargs) -> FakeLocator:
+            return FakeLocator()
+
+        def wait_for_function(self, *_args, **_kwargs) -> None:
+            raise TimeoutError("no section mapping")
+
+    args = capture.build_parser().parse_args([])
+
+    assert capture.discover_land_sections(FakePage(), 1, args) == [
+        ("全區備援", None)
+    ]

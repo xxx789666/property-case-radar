@@ -1,16 +1,28 @@
 #!/usr/bin/env python3
-"""Run one production sale or rental scheduler job immediately."""
+"""Run one production crawler job immediately."""
 
 from __future__ import annotations
 
 import argparse
 import logging
+import sys
+from pathlib import Path
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from apps.config import get_settings
-from apps.scheduler.main import make_live_rental_job, make_live_sale_job
+from apps.scheduler.main import (
+    make_live_auction_job,
+    make_live_rental_job,
+    make_live_sale_job,
+)
 from apps.services.system_alerts import update_system_alert
 from crawlers.rental.captured_source import CapturedRentalCrawler
 from crawlers.rental.captured_status import CapturedRentalStatusVerifier
+from crawlers.auction.captured_source import CapturedAuctionAnnouncementSource
+from crawlers.auction.moj_detail_parser import MojEstateDetailParser
 from crawlers.sale.captured_source import CapturedSaleCrawler
 from crawlers.sale.captured_status import CapturedSaleStatusVerifier
 from crawlers.sale.composite import CompositeSaleCrawler
@@ -20,7 +32,7 @@ from database.session import create_db_engine, create_session_factory
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("job", choices=("rental", "sale"))
+    parser.add_argument("job", choices=("rental", "sale", "auction"))
     return parser
 
 
@@ -85,6 +97,32 @@ def run_sale() -> None:
         engine.dispose()
 
 
+def run_auction() -> None:
+    settings = get_settings()
+    engine = create_db_engine(settings.database_url)
+    factory = create_session_factory(engine)
+    try:
+        source = CapturedAuctionAnnouncementSource(
+            settings.auction_capture_script,
+            output_dir=settings.auction_capture_output_dir,
+            download_dir=settings.auction_capture_download_dir,
+            umi_ocr_url=settings.auction_capture_ocr_url,
+            umi_ocr_executable=settings.auction_capture_ocr_executable,
+            umi_ocr_startup_timeout_seconds=(
+                settings.auction_capture_ocr_startup_timeout_seconds
+            ),
+            json_retention_days=settings.auction_capture_json_retention_days,
+        )
+        make_live_auction_job(
+            factory,
+            source,
+            MojEstateDetailParser(),
+            settings,
+        )()
+    finally:
+        engine.dispose()
+
+
 def main() -> int:
     args = build_parser().parse_args()
     logging.basicConfig(level=logging.INFO)
@@ -92,8 +130,10 @@ def main() -> int:
     try:
         if args.job == "rental":
             run_rental()
-        else:
+        elif args.job == "sale":
             run_sale()
+        else:
+            run_auction()
     except Exception as error:
         update_system_alert(
             settings,

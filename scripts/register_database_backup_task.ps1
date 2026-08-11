@@ -10,6 +10,7 @@ $action = New-ScheduledTaskAction -Execute $powerShell -Argument (
 )
 $trigger = New-ScheduledTaskTrigger -Daily -At "03:00"
 $settings = New-ScheduledTaskSettingsSet `
+    -Hidden `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit (New-TimeSpan -Hours 2) `

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from collections.abc import Callable
+from pathlib import Path
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from sqlalchemy.orm import Session, sessionmaker
@@ -26,6 +27,10 @@ from apps.services.rental_pipeline import ingest_rental_listings
 from apps.services.rental_status_lifecycle import reconcile_stale_rental_listings
 from apps.services.system_alerts import update_system_alert
 from apps.services.scheduler_job_recovery import SchedulerJobRecovery
+from apps.scheduler.instance_lock import (
+    SchedulerAlreadyRunning,
+    scheduler_instance_lock,
+)
 from apps.services.subscription_notifications import (
     deliver_pending_subscription_notifications,
 )
@@ -35,6 +40,7 @@ from crawlers.auction.moj_detail_parser import MojEstateDetailParser
 from crawlers.auction.parser import CourtAnnouncementParser
 from crawlers.transaction.moi_open_data import MoiActualPriceSource, sync_market_prices
 from crawlers.sale.captured_source import CapturedSaleCrawler
+from crawlers.sale.base import SaleCrawler, SaleListing
 from crawlers.sale.captured_status import (
     CapturedSaleStatusVerifier,
     SaleStatusVerificationError,
@@ -75,6 +81,15 @@ class _RentalListingBatchSource(RentalCrawler):
         self._listings = listings
 
     async def fetch(self) -> list[RentalListing]:
+        return list(self._listings)
+
+
+class _SaleListingBatchSource(SaleCrawler):
+    def __init__(self, listings: list[SaleListing]) -> None:
+        super().__init__()
+        self._listings = listings
+
+    async def fetch(self) -> list[SaleListing]:
         return list(self._listings)
 
 
@@ -203,6 +218,57 @@ def make_live_sale_job(
                     high_score_threshold=settings.sale_high_score_threshold,
                     high_score_digest_limit=settings.sale_high_score_digest_limit,
                 )
+
+                sale_source = getattr(crawler, "sources", {}).get("591")
+                failed_cities = tuple(
+                    getattr(sale_source, "last_failed_cities", ())
+                )
+                retry_method = getattr(sale_source, "retry_failed_cities", None)
+                if failed_cities and callable(retry_method):
+                    for retry_round in range(
+                        1, settings.sale_failed_retry_rounds + 1
+                    ):
+                        if not failed_cities:
+                            break
+                        logger.warning(
+                            "waiting %s minutes before sale failed-city retry %s/%s: %s",
+                            settings.sale_failed_retry_delay_minutes,
+                            retry_round,
+                            settings.sale_failed_retry_rounds,
+                            ", ".join(failed_cities),
+                        )
+                        await asyncio.sleep(
+                            settings.sale_failed_retry_delay_minutes * 60
+                        )
+                        retry_listings = await retry_method(failed_cities)
+                        if retry_listings:
+                            retry_result = await ingest_sale_listings(
+                                _SaleListingBatchSource(retry_listings),
+                                session,
+                                notifier=notifier if existing_source_count > 0 else None,
+                                notify_new=False,
+                                high_score_threshold=settings.sale_high_score_threshold,
+                                high_score_digest_limit=settings.sale_high_score_digest_limit,
+                            )
+                            logger.info(
+                                "sale failed-city retry %s/%s ingest finished: %s",
+                                retry_round,
+                                settings.sale_failed_retry_rounds,
+                                retry_result,
+                            )
+                        failed_cities = tuple(
+                            getattr(sale_source, "last_failed_cities", ())
+                        )
+
+                failures = getattr(crawler, "last_failures", {})
+                if sale_source is not None:
+                    if failed_cities:
+                        failures["591"] = (
+                            getattr(sale_source, "last_health_error", None)
+                            or "591 部分縣市補抓仍失敗：" + "、".join(failed_cities)
+                        )
+                    else:
+                        failures.pop("591", None)
                 if notifier is not None and existing_source_count > 0:
                     summary = await deliver_daily_sale_summary(
                         session,
@@ -213,6 +279,25 @@ def make_live_sale_job(
                         "sale daily summary delivery finished: %s",
                         summary,
                     )
+            # Source health is known as soon as capture/retries finish.  Publish
+            # recovery now instead of waiting for the potentially hour-long
+            # stale-listing verification below.
+            for source_name in getattr(crawler, "sources", {}):
+                error = failures.get(source_name)
+                update_system_alert(
+                    settings,
+                    key=f"sale-source:{source_name}",
+                    failing=error is not None,
+                    title=f"售屋來源 {source_name}",
+                    detail=error or "抓取正常",
+                )
+            if failures:
+                raise RuntimeError(
+                    "sale sources remain incomplete after retries: "
+                    + "; ".join(
+                        f"{name}: {error}" for name, error in failures.items()
+                    )
+                )
             if status_verifier is not None:
                 try:
                     status_result = await reconcile_stale_sale_listings(
@@ -249,16 +334,6 @@ def make_live_sale_job(
                         "%s sale status reconciliation failed safely",
                         source_name,
                     )
-            failures = getattr(crawler, "last_failures", {})
-            for source_name in getattr(crawler, "sources", {}):
-                error = failures.get(source_name)
-                update_system_alert(
-                    settings,
-                    key=f"sale-source:{source_name}",
-                    failing=error is not None,
-                    title=f"售屋來源 {source_name}",
-                    detail=error or "抓取正常",
-                )
             logger.info(
                 "sale crawl finished: %s baseline=%s",
                 result,
@@ -669,6 +744,11 @@ def make_live_auction_job(
                     else "重試後全部成功"
                 ),
             )
+            if failed_regions:
+                raise RuntimeError(
+                    "auction counties remain incomplete after retries: "
+                    + ", ".join(failed_regions)
+                )
 
     def run_auction_job() -> None:
         asyncio.run(run_auction_cycle())
@@ -792,7 +872,11 @@ def main() -> None:
         settings.scheduler_daily_hour,
         settings.scheduler_daily_minute,
     )
-    scheduler.start()
+    try:
+        with scheduler_instance_lock(Path("logs/scheduler.lock")):
+            scheduler.start()
+    except SchedulerAlreadyRunning:
+        logger.warning("scheduler startup skipped: another instance is running")
 
 
 if __name__ == "__main__":

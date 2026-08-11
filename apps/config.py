@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     sale_capture_max_pages: int = Field(default=3, ge=1, le=20)
     sale_capture_workers: int = Field(default=4, ge=1, le=8)
     sale_capture_json_retention_days: int = Field(default=30, ge=1, le=365)
+    sale_failed_retry_delay_minutes: int = Field(default=15, ge=1, le=120)
+    sale_failed_retry_rounds: int = Field(default=3, ge=0, le=10)
     housefun_capture_enabled: bool = True
     housefun_capture_max_pages: int = Field(default=3, ge=1, le=3)
     housefun_status_verify_limit: int = Field(default=50, ge=1, le=200)

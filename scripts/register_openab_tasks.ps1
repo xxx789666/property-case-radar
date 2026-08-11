@@ -12,6 +12,7 @@ function Register-RadarTask {
     )
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $currentUser
     $settings = New-ScheduledTaskSettingsSet `
+        -Hidden `
         -AllowStartIfOnBatteries `
         -DontStopIfGoingOnBatteries `
         -ExecutionTimeLimit ([TimeSpan]::Zero) `

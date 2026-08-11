@@ -1,6 +1,7 @@
 from unittest.mock import AsyncMock, patch
 
 import discord
+import pytest
 
 from apps.config import Settings
 from apps.scheduler.main import build_scheduler, make_live_auction_job
@@ -103,7 +104,10 @@ def test_failed_counties_retry_three_times_at_fifteen_minute_intervals(
         auction_failed_retry_rounds=3,
     )
 
-    with patch("apps.scheduler.main.asyncio.sleep", AsyncMock()) as sleep_mock:
+    with (
+        patch("apps.scheduler.main.asyncio.sleep", AsyncMock()) as sleep_mock,
+        pytest.raises(RuntimeError, match="auction counties remain incomplete"),
+    ):
         run_auction_job = make_live_auction_job(
             session_factory,
             source,
