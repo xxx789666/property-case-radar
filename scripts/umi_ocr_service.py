@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 
 # A valid 1x1 PNG. Unlike the old empty-base64 check, this forces Umi-OCR to
 # start the PaddleOCR engine and exercise the same model-switch path used by
@@ -104,6 +106,32 @@ def umi_ocr_process_counts(executable: str | Path) -> tuple[int, int]:
     )
     counts = json.loads(result.stdout.strip().lstrip("\ufeff"))
     return int(counts["umi"]), int(counts["paddle"])
+
+
+def umi_ocr_liveness(
+    url: str,
+    *,
+    executable: str | Path,
+    timeout: float = 2,
+    max_paddle_processes: int = 4,
+) -> bool:
+    """Check Umi without submitting an OCR job that can spawn a new worker."""
+
+    try:
+        parsed = urlsplit(url)
+        if not parsed.hostname:
+            return False
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        with socket.create_connection((parsed.hostname, port), timeout=timeout):
+            pass
+        umi_count, paddle_count = umi_ocr_process_counts(executable)
+        # Zero Paddle workers is the normal idle state before the first OCR
+        # request (and immediately after a restart).  The Umi listener is the
+        # service; Paddle workers are created lazily and only an excessive
+        # count indicates the leak this check is intended to catch.
+        return umi_count == 1 and 0 <= paddle_count <= max_paddle_processes
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
 
 
 def umi_ocr_ready(

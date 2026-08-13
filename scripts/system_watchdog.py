@@ -15,7 +15,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from apps.config import get_settings
 from apps.services.system_alerts import update_system_alert
-from scripts.umi_ocr_service import umi_ocr_ready
+from scripts.umi_ocr_service import umi_ocr_liveness
 
 
 RUNNING_TASKS = (
@@ -137,9 +137,8 @@ def run_watchdog() -> int:
             (
                 "watchdog:umi-ocr",
                 "Umi-OCR API",
-                umi_ocr_ready(
+                umi_ocr_liveness(
                     settings.auction_capture_ocr_url,
-                    timeout=10,
                     executable=settings.auction_capture_ocr_executable,
                 ),
                 settings.auction_capture_ocr_url,

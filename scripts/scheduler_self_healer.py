@@ -26,14 +26,14 @@ from apps.services.system_alerts import (
 from scripts.system_watchdog import latest_backup_is_fresh
 from scripts.umi_ocr_service import (
     restart_umi_ocr,
-    umi_ocr_process_counts,
-    umi_ocr_ready,
+    umi_ocr_liveness,
 )
 
 SCHEDULER_TASK = "Property Case Radar Scheduler"
 GATEWAY_TASK = "Property Case Radar OpenAB Gateway"
 SIDECAR_TASK = "Property Case Radar OpenAB Sidecar"
 BACKUP_TASK = "Property Case Radar Database Backup"
+POSTGRES_SERVICE = "postgresql-x64-17"
 
 
 def tcp_ready(host: str, port: int, timeout: float = 2) -> bool:
@@ -110,6 +110,27 @@ def start_windows_task(name: str) -> None:
     powershell(
         f"Start-ScheduledTask -TaskName '{escaped}' -ErrorAction Stop",
         timeout=30,
+    )
+
+
+def start_postgres(service_name: str = POSTGRES_SERVICE) -> None:
+    """Start PostgreSQL, falling back to pg_ctl for non-elevated task users."""
+
+    escaped = service_name.replace("'", "''")
+    powershell(
+        f"$service = Get-CimInstance Win32_Service -Filter \"Name='{escaped}'\" "
+        "-ErrorAction Stop; "
+        "if ($null -eq $service) { throw 'PostgreSQL service is missing' }; "
+        "try { Start-Service -Name $service.Name -ErrorAction Stop } catch { "
+        "$command = $service.PathName; "
+        "$pgCtl = [regex]::Match($command, '^\"([^\"]*pg_ctl\\.exe)\"').Groups[1].Value; "
+        "$data = [regex]::Match($command, '-D\\s+\"([^\"]+)\"').Groups[1].Value; "
+        "if (-not $pgCtl -or -not $data) { throw }; "
+        "$startupLog = Join-Path $data 'log\\self-heal-startup.log'; "
+        "& $pgCtl start -D $data -l $startupLog -w; "
+        "if ($LASTEXITCODE -ne 0) { throw \"pg_ctl exited with $LASTEXITCODE\" } "
+        "}",
+        timeout=60,
     )
 
 
@@ -308,20 +329,25 @@ def run_self_healer() -> int:
     def backup_healthy() -> bool:
         return latest_backup_is_fresh(settings.database_backup_dir)
 
+    def postgres_healthy() -> bool:
+        from sqlalchemy.engine import make_url
+
+        url = make_url(settings.database_url)
+        return tcp_ready(url.host or "127.0.0.1", url.port or 5432)
+
     def umi_healthy() -> bool:
-        if python_script_running(settings.auction_capture_script):
-            # Umi's HTTP server is single-worker. An image probe while the
-            # crawler is recognizing a CAPTCHA can time out and would make the
-            # healer kill a healthy engine mid-county. During active capture,
-            # use non-invasive process/TCP liveness instead.
-            umi_count, paddle_count = umi_ocr_process_counts(
-                settings.auction_capture_ocr_executable
-            )
-            return umi_count == 1 and paddle_count >= 1
-        return umi_ocr_ready(
+        # The capture script deliberately switches among several OCR model
+        # configurations and Umi retains their workers until the batch ends.
+        # Do not interrupt an active county batch at the stricter idle limit;
+        # after capture exits, the next check uses the idle limit and cleans
+        # up any workers that did not converge.
+        max_workers = (
+            32 if python_script_running(settings.auction_capture_script) else 4
+        )
+        return umi_ocr_liveness(
             settings.auction_capture_ocr_url,
-            timeout=10,
             executable=settings.auction_capture_ocr_executable,
+            max_paddle_processes=max_workers,
         )
 
     components = (
@@ -344,6 +370,13 @@ def run_self_healer() -> int:
             "OpenAB Sidecar／訂閱 Broker",
             sidecar_healthy,
             lambda: restart_windows_task(SIDECAR_TASK),
+            60,
+        ),
+        (
+            "postgresql",
+            "PostgreSQL",
+            postgres_healthy,
+            start_postgres,
             60,
         ),
         (

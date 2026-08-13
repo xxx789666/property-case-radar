@@ -205,22 +205,26 @@ def create_verified_backup() -> Path:
     environment = subprocess_environment(url)
 
     try:
-        subprocess.run(
-            [
-                str(pg_dump),
-                *connection_arguments(url),
-                "--format",
-                "custom",
-                "--no-owner",
-                "--no-privileges",
-                "--file",
-                str(partial_archive),
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            check=True,
-            env=environment,
-        )
+        try:
+            subprocess.run(
+                [
+                    str(pg_dump),
+                    *connection_arguments(url),
+                    "--format",
+                    "custom",
+                    "--no-owner",
+                    "--no-privileges",
+                    "--file",
+                    str(partial_archive),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                check=True,
+                env=environment,
+            )
+        except subprocess.CalledProcessError as error:
+            detail = (error.stderr or b"").decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"pg_dump failed: {detail or error}") from error
         tables, populated = verify_restore(
             partial_archive,
             url=url,
