@@ -25,7 +25,7 @@ from apps.services.system_alerts import (
 )
 from scripts.system_watchdog import latest_backup_is_fresh
 from scripts.umi_ocr_service import (
-    restart_umi_ocr,
+    umi_ocr_diagnostic,
     umi_ocr_liveness,
 )
 
@@ -33,6 +33,7 @@ SCHEDULER_TASK = "Property Case Radar Scheduler"
 GATEWAY_TASK = "Property Case Radar OpenAB Gateway"
 SIDECAR_TASK = "Property Case Radar OpenAB Sidecar"
 BACKUP_TASK = "Property Case Radar Database Backup"
+UMI_OCR_TASK = "Property Case Radar Umi-OCR"
 POSTGRES_SERVICE = "postgresql-x64-17"
 
 
@@ -80,6 +81,19 @@ def windows_task_state(name: str) -> str:
         f"$task = Get-ScheduledTask -TaskName '{escaped}' "
         "-ErrorAction SilentlyContinue; "
         "if ($null -eq $task) { 'Missing' } else { $task.State.ToString() }"
+    )
+
+
+def windows_task_diagnostic(name: str) -> str:
+    escaped = name.replace("'", "''")
+    return powershell(
+        f"$task = Get-ScheduledTask -TaskName '{escaped}' "
+        "-ErrorAction SilentlyContinue; "
+        "if ($null -eq $task) { 'Missing' } else { "
+        f"$info = Get-ScheduledTaskInfo -TaskName '{escaped}'; "
+        "$result = '0x{0:X8}' -f ($info.LastTaskResult -band 0xffffffff); "
+        "'{0}, last_result={1}, last_run={2:yyyy-MM-dd HH:mm:ss}' "
+        "-f $task.State, $result, $info.LastRunTime }"
     )
 
 
@@ -217,13 +231,21 @@ def heal_component(
     title: str,
     healthy: Callable[[], bool],
     repair: Callable[[], None],
+    diagnostic: Callable[[], str] | None = None,
     wait_seconds: int,
     now: datetime,
 ) -> tuple[bool, bool]:
     """Return ``(healthy_after_check, action_attempted)``."""
 
     exhausted_key = f"self-heal-exhausted:{key}"
-    if healthy():
+    initially_healthy = healthy()
+    print(f"component {key}: healthy_before={initially_healthy}")
+    if diagnostic is not None:
+        try:
+            print(f"component {key}: diagnostic_before={diagnostic().strip()}")
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            print(f"component {key}: diagnostic_before_failed={error}")
+    if initially_healthy:
         clear_attempts(state, key)
         update_system_alert(
             settings,
@@ -257,9 +279,21 @@ def heal_component(
         recovered = wait_until(healthy, timeout=wait_seconds)
     except (OSError, subprocess.SubprocessError) as error:
         recovered = False
-        diagnostic = str(error)[:500]
+        failure_detail = str(error)[:500]
     else:
-        diagnostic = "健康檢查已通過" if recovered else "健康檢查仍未通過"
+        failure_detail = "健康檢查已通過" if recovered else "健康檢查仍未通過"
+
+    if not recovered and diagnostic is not None:
+        try:
+            detail = diagnostic().strip()
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            detail = f"診斷資料取得失敗：{error}"
+        if detail:
+            failure_detail = f"{failure_detail}；{detail}"[:1800]
+    print(
+        f"component {key}: repair_attempt={attempt} recovered={recovered} "
+        f"detail={failure_detail}"
+    )
 
     if recovered:
         clear_attempts(state, key)
@@ -267,7 +301,7 @@ def heal_component(
             settings,
             (
                 f"🛠️ **排程自癒 {title}｜已恢復**\n"
-                f"第 {attempt} 次修復成功；{diagnostic}。"
+                f"第 {attempt} 次修復成功；{failure_detail}。"
             ),
         )
         update_system_alert(
@@ -287,7 +321,7 @@ def heal_component(
             title=f"自癒系統 {title}",
             detail=(
                 f"第 {attempt}/{settings.self_heal_max_retries} 次修復失敗："
-                f"{diagnostic}。需要人工處理。"
+                f"{failure_detail}。需要人工處理。"
             ),
         )
     else:
@@ -295,7 +329,7 @@ def heal_component(
             settings,
             (
                 f"⚠️ **排程自癒 {title}｜第 {attempt} 次未成功**\n"
-                f"{diagnostic}；將於冷卻 "
+                f"{failure_detail}；將於冷卻 "
                 f"{settings.self_heal_service_cooldown_minutes} 分鐘後再試。"
             ),
         )
@@ -390,14 +424,25 @@ def run_self_healer() -> int:
             "umi-ocr",
             "Umi-OCR API",
             umi_healthy,
-            lambda: restart_umi_ocr(settings.auction_capture_ocr_executable),
+            lambda: restart_windows_task(UMI_OCR_TASK),
             int(settings.auction_capture_ocr_startup_timeout_seconds),
+            lambda: umi_ocr_diagnostic(
+                settings.auction_capture_ocr_url,
+                executable=settings.auction_capture_ocr_executable,
+                task_state=windows_task_diagnostic(UMI_OCR_TASK),
+                log_path=(
+                    Path(settings.auction_capture_ocr_executable).resolve().parent
+                    / "UmiOCR-data"
+                    / "logs"
+                ),
+            ),
         ),
     )
 
     failing = 0
     actions = 0
-    for key, title, healthy, repair, wait_seconds in components:
+    for component in components:
+        key, title, healthy, repair, wait_seconds, *extra = component
         is_healthy, attempted = heal_component(
             settings=settings,
             state=state,
@@ -405,6 +450,7 @@ def run_self_healer() -> int:
             title=title,
             healthy=healthy,
             repair=repair,
+            diagnostic=extra[0] if extra else None,
             wait_seconds=wait_seconds,
             now=now,
         )

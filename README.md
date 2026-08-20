@@ -126,6 +126,19 @@ OpenAB Sidecar／訂閱 Broker及每日資料庫備份。常駐服務異常會�
 powershell -ExecutionPolicy Bypass -File scripts/register_scheduler_self_healer_task.ps1
 ```
 
+Umi-OCR 由獨立的登入排程持續管理。排程在登入後延遲 60 秒啟動，
+異常退出時每分鐘自動重啟（最多 3 次）；自癒器只重啟此排程，不再產生
+無人管理的 OCR 子程序：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/register_umi_ocr_task.ps1
+```
+
+排程直接持有 Umi-OCR 程序，避免隱藏 PowerShell 中介程序造成 GUI 程序立即
+退出。PID、程序數、1224 埠及 Task Scheduler 退出碼會寫入
+`logs/scheduler-self-healer.log`；Umi-OCR 本身的錯誤保存在安裝目錄下的
+`UmiOCR-data/logs`。
+
 一般售屋查詢請在 `1530076451242508318` 標記 Bot，例如：
 `@Property Case Radar 幫我查詢桃園中壢區 1500 萬以內案件`。Agent 會固定轉成
 `house-search --city 桃園市 --district 中壢區 --max-total-price-twd 15000000`

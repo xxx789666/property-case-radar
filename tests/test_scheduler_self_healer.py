@@ -111,3 +111,35 @@ def test_python_script_running_filters_to_python_process(monkeypatch):
     )
 
     assert python_script_running("D:/capture_auction_results.py")
+
+
+def test_failed_repair_notification_includes_component_diagnostic(
+    monkeypatch, tmp_path
+):
+    settings = make_settings(tmp_path)
+    notifications = []
+    monkeypatch.setattr(
+        "scripts.scheduler_self_healer.wait_until",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        "scripts.scheduler_self_healer.send_discord_system_message",
+        lambda _settings, message: notifications.append(message) or True,
+    )
+
+    healthy, attempted = heal_component(
+        settings=settings,
+        state={},
+        key="umi-ocr",
+        title="Umi-OCR API",
+        healthy=lambda: False,
+        repair=lambda: None,
+        diagnostic=lambda: "排程=Ready；Umi程序=0；連接埠1224=未監聽",
+        wait_seconds=1,
+        now=datetime(2026, 8, 20, 1, 0, tzinfo=UTC),
+    )
+
+    assert not healthy
+    assert attempted
+    assert "排程=Ready" in notifications[0]
+    assert "連接埠1224=未監聽" in notifications[0]

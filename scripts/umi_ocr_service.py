@@ -73,9 +73,9 @@ def ensure_umi_ocr_cp950_compatibility(executable: str | Path) -> int:
     return changes
 
 
-def umi_ocr_process_counts(executable: str | Path) -> tuple[int, int]:
+def umi_ocr_process_details(executable: str | Path) -> tuple[list[int], list[int]]:
     if os.name != "nt":
-        return (1, 1)
+        return ([os.getpid()], [os.getpid()])
     executable = Path(executable).resolve()
     root = executable.parent.resolve()
     exe_value = str(executable).replace("'", "''")
@@ -84,8 +84,10 @@ def umi_ocr_process_counts(executable: str | Path) -> tuple[int, int]:
     script = (
         f"$umi = '{exe_value}'; $paddle = '{paddle_value}'; "
         "$rows = Get-CimInstance Win32_Process; "
-        "$result = @{ umi = @($rows | Where-Object { $_.ExecutablePath -eq $umi }).Count; "
-        "paddle = @($rows | Where-Object { $_.ExecutablePath -like $paddle }).Count }; "
+        "$result = @{ umi = @($rows | Where-Object { $_.ExecutablePath -eq $umi } | "
+        "ForEach-Object { $_.ProcessId }); "
+        "paddle = @($rows | Where-Object { $_.ExecutablePath -like $paddle } | "
+        "ForEach-Object { $_.ProcessId }) }; "
         "$result | ConvertTo-Json -Compress"
     )
     result = subprocess.run(
@@ -104,8 +106,20 @@ def umi_ocr_process_counts(executable: str | Path) -> tuple[int, int]:
         timeout=20,
         check=True,
     )
-    counts = json.loads(result.stdout.strip().lstrip("\ufeff"))
-    return int(counts["umi"]), int(counts["paddle"])
+    details = json.loads(result.stdout.strip().lstrip("\ufeff"))
+
+    def process_ids(value: object) -> list[int]:
+        if value is None:
+            return []
+        values = value if isinstance(value, list) else [value]
+        return [int(process_id) for process_id in values]
+
+    return process_ids(details["umi"]), process_ids(details["paddle"])
+
+
+def umi_ocr_process_counts(executable: str | Path) -> tuple[int, int]:
+    umi_ids, paddle_ids = umi_ocr_process_details(executable)
+    return len(umi_ids), len(paddle_ids)
 
 
 def umi_ocr_liveness(
@@ -132,6 +146,74 @@ def umi_ocr_liveness(
         return umi_count == 1 and 0 <= paddle_count <= max_paddle_processes
     except (OSError, ValueError, subprocess.SubprocessError):
         return False
+
+
+def umi_ocr_diagnostic(
+    url: str,
+    *,
+    executable: str | Path,
+    task_state: str,
+    log_path: str | Path | None = None,
+) -> str:
+    """Return concise process, port, task, and recent startup diagnostics."""
+
+    parsed = urlsplit(url)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    port_ready = False
+    try:
+        if parsed.hostname:
+            with socket.create_connection((parsed.hostname, port), timeout=2):
+                port_ready = True
+    except OSError:
+        pass
+
+    try:
+        umi_ids, paddle_ids = umi_ocr_process_details(executable)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        process_detail = f"程序查詢失敗={error}"
+    else:
+        process_detail = (
+            f"Umi程序={len(umi_ids)}, Paddle程序={len(paddle_ids)}, "
+            f"PID={umi_ids or '-'}, PaddlePID={paddle_ids or '-'}"
+        )
+
+    parts = [
+        f"排程={task_state}",
+        process_detail,
+        f"連接埠{port}={'監聽中' if port_ready else '未監聽'}",
+    ]
+    if log_path is not None:
+        log_path = Path(log_path)
+        if log_path.is_dir():
+            try:
+                log_path = max(
+                    log_path.glob("log_*.jsonl.txt"),
+                    key=lambda path: path.stat().st_mtime,
+                )
+            except (ValueError, OSError):
+                log_path = Path("")
+        try:
+            is_recent = time.time() - log_path.stat().st_mtime <= 3600
+            lines = (
+                log_path.read_text(encoding="utf-8-sig").splitlines()
+                if is_recent
+                else []
+            )
+        except OSError:
+            lines = []
+        if lines:
+            parts.append("最近紀錄=" + " | ".join(lines[-3:])[-900:])
+    return "；".join(parts)
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) != 3 or sys.argv[1] != "--ensure-compatibility":
+        raise SystemExit(
+            "usage: umi_ocr_service.py --ensure-compatibility <Umi-OCR.exe>"
+        )
+    print(ensure_umi_ocr_cp950_compatibility(sys.argv[2]))
 
 
 def umi_ocr_ready(

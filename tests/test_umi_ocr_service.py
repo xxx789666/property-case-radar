@@ -4,6 +4,7 @@ from pathlib import Path
 from scripts.umi_ocr_service import (
     ensure_umi_ocr_cp950_compatibility,
     launch_umi_ocr,
+    umi_ocr_diagnostic,
     umi_ocr_liveness,
     umi_ocr_ready,
 )
@@ -78,6 +79,32 @@ def test_liveness_accepts_idle_service_before_first_ocr_request(monkeypatch):
         "http://127.0.0.1:1224/api/ocr",
         executable="Umi-OCR.exe",
     )
+
+
+def test_diagnostic_includes_task_process_port_and_recent_log(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "scripts.umi_ocr_service.socket.create_connection",
+        lambda *_args, **_kwargs: FakeSocket(),
+    )
+    monkeypatch.setattr(
+        "scripts.umi_ocr_service.umi_ocr_process_details",
+        lambda _executable: ([42], []),
+    )
+    log_path = tmp_path / "umi.log"
+    log_path.write_text("old\nstarted pid=42\nhealthy\n", encoding="utf-8")
+
+    detail = umi_ocr_diagnostic(
+        "http://127.0.0.1:1224/api/ocr",
+        executable="Umi-OCR.exe",
+        task_state="Running",
+        log_path=log_path,
+    )
+
+    assert "排程=Running" in detail
+    assert "Umi程序=1, Paddle程序=0" in detail
+    assert "PID=[42]" in detail
+    assert "連接埠1224=監聽中" in detail
+    assert "started pid=42" in detail
 
 
 def test_health_probe_uses_real_image_and_english_model(monkeypatch):
