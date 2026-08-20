@@ -5,10 +5,20 @@ import pytest
 
 from crawlers.auction.captured_source import (
     AuctionCaptureError,
+    AuctionNetworkAccessDenied,
     CapturedAuctionAnnouncementSource,
     _load_capture_payloads,
+    _probe_https_endpoint,
     _result_path_from_stdout,
 )
+
+
+class FakeSocket:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
 
 
 def test_capture_stdout_and_three_county_summary_are_resolved(tmp_path: Path) -> None:
@@ -35,6 +45,31 @@ def test_capture_stdout_and_three_county_summary_are_resolved(tmp_path: Path) ->
 def test_capture_stdout_without_result_is_rejected() -> None:
     with pytest.raises(AuctionCaptureError, match="did not report"):
         _result_path_from_stdout("not json\n")
+
+
+def test_network_preflight_accepts_reachable_moj_endpoint(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "crawlers.auction.captured_source.socket.create_connection",
+        lambda address, timeout: FakeSocket(),
+    )
+
+    _probe_https_endpoint("https://www.tpkonsale.moj.gov.tw/Estate", timeout=3)
+
+
+def test_network_preflight_classifies_windows_access_denied(monkeypatch) -> None:
+    def denied(*_args, **_kwargs):
+        error = OSError(10013, "access denied")
+        error.winerror = 10013
+        raise error
+
+    monkeypatch.setattr(
+        "crawlers.auction.captured_source.socket.create_connection", denied
+    )
+
+    with pytest.raises(AuctionNetworkAccessDenied, match="Proton VPN") as captured:
+        _probe_https_endpoint("https://www.tpkonsale.moj.gov.tw/Estate")
+
+    assert captured.value.retryable is False
 
 
 def test_capture_summary_exposes_failed_counties(tmp_path: Path) -> None:

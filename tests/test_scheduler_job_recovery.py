@@ -127,3 +127,32 @@ def test_retry_stops_after_configured_limit(monkeypatch, tmp_path):
         and alert["failing"] is True
         for alert in alerts
     )
+
+
+def test_nonretryable_failure_does_not_schedule_job_retry(monkeypatch, tmp_path):
+    scheduler = FakeScheduler()
+    settings = Settings(
+        database_url="sqlite://",
+        discord_token=None,
+        system_alert_state_path=tmp_path / "alerts.json",
+    )
+    alerts = []
+    monkeypatch.setattr(
+        "apps.services.scheduler_job_recovery.update_system_alert",
+        lambda _settings, **kwargs: alerts.append(kwargs),
+    )
+
+    class NetworkBlocked(RuntimeError):
+        retryable = False
+
+    recovery = SchedulerJobRecovery(scheduler, settings)
+    recovery.handle_event(
+        SimpleNamespace(
+            job_id="rental-crawler",
+            exception=NetworkBlocked("socket 10013"),
+        )
+    )
+
+    assert scheduler.added == []
+    assert "rental-crawler" not in recovery.attempts
+    assert "停止無效補跑" in alerts[0]["detail"]

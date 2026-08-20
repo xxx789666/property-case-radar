@@ -673,12 +673,14 @@ def make_live_auction_job(
                 await asyncio.sleep(settings.auction_failed_retry_delay_minutes * 60)
                 try:
                     retry_announcements = await retry_method(failed_regions)
-                except Exception:  # noqa: BLE001 - retain the failed set for the next round
+                except Exception as error:  # noqa: BLE001 - classify before retrying
                     logger.exception(
                         "auction failed-county retry %s/%s crashed",
                         retry_round,
                         settings.auction_failed_retry_rounds,
                     )
+                    if getattr(error, "retryable", True) is False:
+                        raise
                     continue
 
                 if retry_announcements:

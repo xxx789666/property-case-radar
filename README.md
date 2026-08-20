@@ -139,6 +139,16 @@ powershell -ExecutionPolicy Bypass -File scripts/register_umi_ocr_task.ps1
 `logs/scheduler-self-healer.log`；Umi-OCR 本身的錯誤保存在安裝目錄下的
 `UmiOCR-data/logs`。
 
+若法拍網站出現 `ERR_NETWORK_ACCESS_DENIED`／Socket 10013，可用系統管理員
+PowerShell 移除與 Proton VPN 衝突的舊永久路由並驗證 HTTPS：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/repair_moj_network_route.ps1
+```
+
+法拍抓取會在啟動瀏覽器前預檢目標站 443；本機網路封鎖會顯示 VPN／路由
+診斷並停止無效補跑，不會再對 22 縣市重複相同錯誤。
+
 一般售屋查詢請在 `1530076451242508318` 標記 Bot，例如：
 `@Property Case Radar 幫我查詢桃園中壢區 1500 萬以內案件`。Agent 會固定轉成
 `house-search --city 桃園市 --district 中壢區 --max-total-price-twd 15000000`

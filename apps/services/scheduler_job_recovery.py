@@ -39,20 +39,28 @@ class SchedulerJobRecovery:
             self._mark_recovered(original_id)
             return
 
-        attempt = self.attempts.get(original_id, 0) + 1
-        self.attempts[original_id] = attempt
-        retry_scheduled = self._schedule_retry(original_id, attempt)
         detail = str(event.exception)[:1200]
+        retryable = getattr(event.exception, "retryable", True) is not False
+        if retryable:
+            attempt = self.attempts.get(original_id, 0) + 1
+            self.attempts[original_id] = attempt
+            retry_scheduled = self._schedule_retry(original_id, attempt)
+        else:
+            retry_scheduled = False
+            attempt = 0
+
         if retry_scheduled:
             detail += (
                 f"\n自癒系統將於 {self.settings.self_heal_retry_delay_minutes} 分鐘後"
                 f"進行第 {attempt}/{self.settings.self_heal_max_retries} 次補跑。"
             )
-        else:
+        elif retryable:
             detail += (
                 f"\n自癒補跑已達上限 "
                 f"{self.settings.self_heal_max_retries} 次，需要人工處理。"
             )
+        else:
+            detail += "\n此故障屬於本機網路封鎖，已停止無效補跑，需要人工處理。"
 
         update_system_alert(
             self.settings,

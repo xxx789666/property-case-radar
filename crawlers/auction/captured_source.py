@@ -7,6 +7,7 @@ import html
 import json
 import logging
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -26,10 +27,17 @@ from crawlers.auction.court_crawler import (
 )
 
 logger = logging.getLogger(__name__)
+MOJ_AUCTION_HOME_URL = "https://www.tpkonsale.moj.gov.tw/Estate"
 
 
 class AuctionCaptureError(RuntimeError):
     """The external capture program failed or returned unusable output."""
+
+
+class AuctionNetworkAccessDenied(AuctionCaptureError):
+    """The MOJ endpoint is blocked locally and retries cannot repair it."""
+
+    retryable = False
 
 
 class CapturedAuctionAnnouncementSource(AuctionAnnouncementSource):
@@ -52,6 +60,7 @@ class CapturedAuctionAnnouncementSource(AuctionAnnouncementSource):
         python_executable: str = sys.executable,
         timeout_seconds: float = 4 * 60 * 60,
         json_retention_days: int = 30,
+        network_preflight_url: str = MOJ_AUCTION_HOME_URL,
         policy: CompliancePolicy | None = None,
     ) -> None:
         super().__init__(policy)
@@ -64,12 +73,14 @@ class CapturedAuctionAnnouncementSource(AuctionAnnouncementSource):
         self.python_executable = python_executable
         self.timeout_seconds = timeout_seconds
         self.json_retention_days = json_retention_days
+        self.network_preflight_url = network_preflight_url
         self.last_failed_counties: tuple[str, ...] = ()
 
     async def fetch(self) -> list[RawAnnouncement]:
         if not self.script_path.is_file():
             raise AuctionCaptureError(f"auction capture script not found: {self.script_path}")
 
+        await self._ensure_network_ready()
         await self._ensure_ocr_ready()
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.download_dir.mkdir(parents=True, exist_ok=True)
@@ -91,6 +102,7 @@ class CapturedAuctionAnnouncementSource(AuctionAnnouncementSource):
     ) -> list[RawAnnouncement]:
         """Retry only failed counties once and retain the still-failed set."""
 
+        await self._ensure_network_ready()
         await self._ensure_ocr_ready()
         announcements: list[RawAnnouncement] = []
         remaining: list[str] = []
@@ -156,6 +168,9 @@ class CapturedAuctionAnnouncementSource(AuctionAnnouncementSource):
             )
 
         return _result_path_from_stdout(stdout_text)
+
+    async def _ensure_network_ready(self) -> None:
+        await asyncio.to_thread(_probe_https_endpoint, self.network_preflight_url)
 
     def load_result(self, result_path: str | Path) -> list[RawAnnouncement]:
         """Load a completed capture summary without starting another browser run."""
@@ -276,6 +291,27 @@ def _result_path_from_stdout(stdout: str) -> Path:
                 return path
             raise AuctionCaptureError(f"capture result file not found: {path}")
     raise AuctionCaptureError("capture program did not report a JSON output path")
+
+
+def _probe_https_endpoint(url: str, timeout: float = 10) -> None:
+    parsed = urlsplit(url)
+    if not parsed.hostname:
+        raise AuctionCaptureError(f"invalid auction network preflight URL: {url}")
+    port = parsed.port or 443
+    try:
+        with socket.create_connection((parsed.hostname, port), timeout=timeout):
+            return
+    except OSError as error:
+        code = getattr(error, "winerror", None) or error.errno
+        if code == 10013:
+            raise AuctionNetworkAccessDenied(
+                "MOJ auction HTTPS access denied by Windows (socket 10013); "
+                "check Proton VPN kill switch/split tunneling and persistent route "
+                f"for {parsed.hostname}:{port}"
+            ) from error
+        raise AuctionCaptureError(
+            f"MOJ auction HTTPS preflight failed for {parsed.hostname}:{port}: {error}"
+        ) from error
 
 
 def _load_capture_payloads(path: Path) -> list[dict[str, Any]]:
