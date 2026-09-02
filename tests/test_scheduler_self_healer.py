@@ -314,17 +314,21 @@ def test_run_postgres_start_detaches_native_streams_from_outer_capture():
     ).read_text(encoding="utf-8")
 
     assert "& $pgCtl start" not in launcher_text
-    assert "Start-Process" in launcher_text
-    assert "-FilePath $pgCtl" in launcher_text
-    assert "ArgumentList" in launcher_text
+    assert "Start-Process" not in launcher_text
+    assert "NoNewWindow" not in launcher_text
+    assert "RedirectStandardOutput" not in launcher_text
+    assert "RedirectStandardError" not in launcher_text
+    assert "CreateProcess" in launcher_text
+    assert "CREATE_BREAKAWAY_FROM_JOB" in launcher_text
+    assert "CREATE_NEW_PROCESS_GROUP" in launcher_text
+    assert "CREATE_NO_WINDOW" in launcher_text
+    assert "PROC_THREAD_ATTRIBUTE_HANDLE_LIST" in launcher_text
     assert '"-p {0}"' in launcher_text
     assert '''"-D", ('"{0}"' -f ($data -replace '"', '\\"'))''' in launcher_text
     assert '''"-l", ('"{0}"' -f ($logPath -replace '"', '\\"'))''' in launcher_text
-    assert "RedirectStandardOutput" in launcher_text
-    assert "RedirectStandardError" in launcher_text
     assert "postgres-self-heal-ctl.out.log" in launcher_text
     assert "postgres-self-heal-ctl.err.log" in launcher_text
-    assert "WaitForExit" in launcher_text
+    assert "WaitForSingleObject" in launcher_text
     assert "70000" in launcher_text
     assert "ComSpec" not in launcher_text
     assert "startCommand" not in launcher_text
@@ -349,8 +353,8 @@ def test_run_postgres_failure_rethrows_control_log_or_fallback():
     assert "timed out" in launcher_text.lower()
     assert "no control log output" in launcher_text
     assert "$exitCode" in launcher_text
-    assert "HasExited" in launcher_text
-    assert "Kill()" in launcher_text
+    assert "TerminateProcess" in launcher_text
+    assert "WaitForSingleObject" in launcher_text
 
 
 def _win32_argument_list_snippet():
@@ -358,11 +362,11 @@ def _win32_argument_list_snippet():
         REPOSITORY_ROOT / "scripts" / "run_postgres.ps1"
     ).read_text(encoding="utf-8")
     match = re.search(
-        r"\$argumentList = @\((.*?)\)\s*\$process = Start-Process",
+        r"\$argumentList = @\((.*?)\)\s*\$quotedApp",
         launcher_text,
         re.S,
     )
-    assert match, "run_postgres.ps1 must build $argumentList for Start-Process"
+    assert match, "run_postgres.ps1 must build $argumentList for the native command line"
     return match.group(1)
 
 
