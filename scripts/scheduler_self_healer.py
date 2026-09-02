@@ -82,6 +82,8 @@ def powershell(script: str, *, timeout: int = 30) -> str:
             "-NoLogo",
             "-NoProfile",
             "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
             "-Command",
             script,
         ],

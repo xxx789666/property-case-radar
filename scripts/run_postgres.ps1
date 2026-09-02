@@ -1,19 +1,27 @@
 $ErrorActionPreference = "Stop"
 
-. (Join-Path $PSScriptRoot "use_d_runtime.ps1")
+$repositoryRoot = Split-Path -Parent $PSScriptRoot
+$pgCtl = "D:\PostgreSQL\17\bin\pg_ctl.exe"
+$data = "D:\PostgreSQL\17\data"
+$port = "15432"
 
-$pgCtl = Join-Path $RadarPostgresBin "pg_ctl.exe"
-$logDirectory = Join-Path $RadarRepoRoot "logs"
+foreach ($requiredPath in @($pgCtl, $data)) {
+    if (-not (Test-Path -LiteralPath $requiredPath)) {
+        throw "Required PostgreSQL path is missing: $requiredPath"
+    }
+}
+
+$logDirectory = Join-Path $repositoryRoot "logs"
 $logPath = Join-Path $logDirectory "postgres-local.log"
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
 
-& $pgCtl status -D $RadarPostgresData 2>$null
+& $pgCtl status -D $data 2>$null
 if ($LASTEXITCODE -eq 0) {
     return
 }
 
-& $pgCtl start -D $RadarPostgresData -l $logPath `
-    -o ('"-p {0}"' -f $RadarPostgresPort) -w -t 60
+& $pgCtl start -D $data -l $logPath `
+    -o ('"-p {0}"' -f $port) -w -t 60
 if ($LASTEXITCODE -ne 0) {
     throw "PostgreSQL startup failed: $LASTEXITCODE"
 }
