@@ -302,6 +302,35 @@ def test_run_postgres_launcher_is_postgres_only():
     assert "Test-Path" in launcher_text
     assert "-w" in launcher_text
     assert "-t 60" in launcher_text
+    assert "postgres-local.log" in launcher_text
+
+
+def test_run_postgres_start_detaches_native_streams_from_outer_capture():
+    launcher_text = (
+        REPOSITORY_ROOT / "scripts" / "run_postgres.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "& $pgCtl start" not in launcher_text
+    assert "Start-Process" in launcher_text
+    assert "WindowStyle" in launcher_text
+    assert "Hidden" in launcher_text
+    assert "RedirectStandardOutput" not in launcher_text
+    assert "RedirectStandardError" not in launcher_text
+    assert "postgres-self-heal-ctl.log" in launcher_text
+    assert "2>&1" in launcher_text
+    assert "/c" in launcher_text
+
+
+def test_run_postgres_failure_rethrows_control_log_or_fallback():
+    launcher_text = (
+        REPOSITORY_ROOT / "scripts" / "run_postgres.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "Get-Content" in launcher_text
+    assert "postgres-self-heal-ctl.log" in launcher_text
+    assert "PostgreSQL startup failed" in launcher_text
+    assert "no control log output" in launcher_text
+    assert "$exitCode" in launcher_text
 
 
 def test_powershell_uses_execution_policy_bypass(monkeypatch):
