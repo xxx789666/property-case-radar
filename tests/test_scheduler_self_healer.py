@@ -1,5 +1,7 @@
+import json
 import re
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -316,6 +318,8 @@ def test_run_postgres_start_detaches_native_streams_from_outer_capture():
     assert "-FilePath $pgCtl" in launcher_text
     assert "ArgumentList" in launcher_text
     assert '"-p {0}"' in launcher_text
+    assert '''"-D", ('"{0}"' -f ($data -replace '"', '\\"'))''' in launcher_text
+    assert '''"-l", ('"{0}"' -f ($logPath -replace '"', '\\"'))''' in launcher_text
     assert "RedirectStandardOutput" in launcher_text
     assert "RedirectStandardError" in launcher_text
     assert "postgres-self-heal-ctl.out.log" in launcher_text
@@ -347,6 +351,82 @@ def test_run_postgres_failure_rethrows_control_log_or_fallback():
     assert "$exitCode" in launcher_text
     assert "HasExited" in launcher_text
     assert "Kill()" in launcher_text
+
+
+def _win32_argument_list_snippet():
+    launcher_text = (
+        REPOSITORY_ROOT / "scripts" / "run_postgres.ps1"
+    ).read_text(encoding="utf-8")
+    match = re.search(
+        r"\$argumentList = @\((.*?)\)\s*\$process = Start-Process",
+        launcher_text,
+        re.S,
+    )
+    assert match, "run_postgres.ps1 must build $argumentList for Start-Process"
+    return match.group(1)
+
+
+def _ps_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def test_start_process_keeps_spaced_data_and_log_paths_as_one_argv(tmp_path):
+    printer = tmp_path / "print_argv.py"
+    printer.write_text(
+        "import json, sys\nprint(json.dumps(sys.argv[1:]))\n",
+        encoding="ascii",
+    )
+    stdout_log = tmp_path / "argv-out.log"
+    stderr_log = tmp_path / "argv-err.log"
+    data = str(tmp_path / "Program Files" / "pg data")
+    log_path = str(tmp_path / "My Logs" / "postgres-local.log")
+    snippet = _win32_argument_list_snippet()
+    command = f"""
+$ErrorActionPreference = 'Stop'
+$data = {_ps_single_quote(data)}
+$logPath = {_ps_single_quote(log_path)}
+$port = '15432'
+$argumentList = @(
+    ('"{{0}}"' -f ({_ps_single_quote(str(printer))} -replace '"', '\\"')),
+    {snippet}
+)
+$process = Start-Process -FilePath {_ps_single_quote(sys.executable)} `
+    -ArgumentList $argumentList `
+    -PassThru `
+    -NoNewWindow `
+    -RedirectStandardOutput {_ps_single_quote(str(stdout_log))} `
+    -RedirectStandardError {_ps_single_quote(str(stderr_log))}
+$null = $process.Handle
+if (-not $process.WaitForExit(30000)) {{
+    if (-not $process.HasExited) {{ $process.Kill() }}
+    throw 'argv probe timed out'
+}}
+if ($process.ExitCode -ne 0) {{
+    throw "argv probe exited $($process.ExitCode)"
+}}
+"""
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    argv = json.loads(stdout_log.read_text(encoding="utf-8").strip())
+    assert argv[argv.index("-D") + 1] == data
+    assert argv[argv.index("-l") + 1] == log_path
+    assert argv[argv.index("-o") + 1] == "-p 15432"
 
 
 def test_powershell_uses_execution_policy_bypass(monkeypatch):

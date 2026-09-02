@@ -30,8 +30,8 @@ foreach ($controlFile in @($stdoutLog, $stderrLog)) {
 
 $argumentList = @(
     "start",
-    "-D", $data,
-    "-l", $logPath,
+    "-D", ('"{0}"' -f ($data -replace '"', '\"')),
+    "-l", ('"{0}"' -f ($logPath -replace '"', '\"')),
     "-o", ('"-p {0}"' -f $port),
     "-w",
     "-t", "60"
@@ -42,6 +42,7 @@ $process = Start-Process -FilePath $pgCtl `
     -NoNewWindow `
     -RedirectStandardOutput $stdoutLog `
     -RedirectStandardError $stderrLog
+$null = $process.Handle
 if (-not $process.WaitForExit(70000)) {
     if (-not $process.HasExited) {
         $process.Kill()
