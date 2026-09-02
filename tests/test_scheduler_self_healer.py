@@ -1,10 +1,16 @@
+import subprocess
 from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from apps.config import Settings
 from scripts.scheduler_self_healer import (
+    REPOSITORY_ROOT,
     heal_component,
+    powershell,
     python_script_running,
     reserve_attempt,
+    start_postgres,
 )
 
 
@@ -143,3 +149,135 @@ def test_failed_repair_notification_includes_component_diagnostic(
     assert attempted
     assert "排程=Ready" in notifications[0]
     assert "連接埠1224=未監聽" in notifications[0]
+
+
+def test_start_postgres_invokes_run_postgres_script(monkeypatch):
+    captured = {}
+
+    def fake_powershell(script, *, timeout=30):
+        captured["script"] = script
+        captured["timeout"] = timeout
+        return ""
+
+    monkeypatch.setattr("scripts.scheduler_self_healer.powershell", fake_powershell)
+
+    start_postgres()
+
+    script_path = REPOSITORY_ROOT / "scripts" / "run_postgres.ps1"
+    escaped = str(script_path).replace("'", "''")
+    assert f"& '{escaped}'" in captured["script"]
+    assert "Win32_Service" not in captured["script"]
+    assert "postgresql-x64-17" not in captured["script"]
+    assert captured["timeout"] >= 60
+
+
+def test_start_postgres_escapes_single_quotes_in_script_path(monkeypatch, tmp_path):
+    captured = {}
+    repo_root = tmp_path / "repo's root"
+
+    def fake_powershell(script, *, timeout=30):
+        captured["script"] = script
+        captured["timeout"] = timeout
+        return ""
+
+    monkeypatch.setattr("scripts.scheduler_self_healer.REPOSITORY_ROOT", repo_root)
+    monkeypatch.setattr("scripts.scheduler_self_healer.powershell", fake_powershell)
+
+    start_postgres()
+
+    escaped = str(repo_root / "scripts" / "run_postgres.ps1").replace("'", "''")
+    assert f"& '{escaped}'" in captured["script"]
+    assert "repo''s root" in captured["script"]
+
+
+def _fake_powershell_run(*, returncode, stdout="", stderr=""):
+    def fake_run(args, **kwargs):
+        completed = subprocess.CompletedProcess(
+            args=args,
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
+        if kwargs.get("check") and completed.returncode:
+            raise subprocess.CalledProcessError(
+                completed.returncode,
+                args,
+                output=completed.stdout,
+                stderr=completed.stderr,
+            )
+        return completed
+
+    return fake_run
+
+
+def test_powershell_nonzero_exit_preserves_stderr_and_exit_code(monkeypatch):
+    long_script = "Write-Error " + ("A" * 400)
+    monkeypatch.setattr(
+        "scripts.scheduler_self_healer.subprocess.run",
+        _fake_powershell_run(
+            returncode=17,
+            stderr="pg_ctl: directory does not exist\n",
+        ),
+    )
+
+    with pytest.raises(subprocess.SubprocessError) as excinfo:
+        powershell(long_script)
+
+    message = str(excinfo.value)
+    assert "17" in message
+    assert "pg_ctl: directory does not exist" in message
+    assert "A" * 50 not in message
+
+
+def test_powershell_nonzero_exit_falls_back_to_stdout(monkeypatch):
+    monkeypatch.setattr(
+        "scripts.scheduler_self_healer.subprocess.run",
+        _fake_powershell_run(
+            returncode=3,
+            stdout="The term 'pg_ctl.exe' is not recognized\n",
+            stderr="   \n",
+        ),
+    )
+
+    with pytest.raises(subprocess.SubprocessError) as excinfo:
+        powershell("Get-Command pg_ctl.exe")
+
+    message = str(excinfo.value)
+    assert "3" in message
+    assert "The term 'pg_ctl.exe' is not recognized" in message
+
+
+def test_heal_component_failure_keeps_stderr_despite_long_command(
+    monkeypatch, tmp_path
+):
+    settings = make_settings(tmp_path)
+    notifications = []
+    monkeypatch.setattr(
+        "scripts.scheduler_self_healer.subprocess.run",
+        _fake_powershell_run(
+            returncode=1,
+            stderr="pg_ctl: PID file is missing\n",
+        ),
+    )
+    monkeypatch.setattr(
+        "scripts.scheduler_self_healer.send_discord_system_message",
+        lambda _settings, message: notifications.append(message) or True,
+    )
+
+    healthy, attempted = heal_component(
+        settings=settings,
+        state={},
+        key="postgresql",
+        title="PostgreSQL",
+        healthy=lambda: False,
+        repair=lambda: powershell("x" * 600),
+        wait_seconds=1,
+        now=datetime(2026, 9, 2, 8, 0, tzinfo=UTC),
+    )
+
+    assert not healthy
+    assert attempted
+    assert notifications
+    assert "pg_ctl: PID file is missing" in notifications[0]
+    assert "1" in notifications[0]
+    assert "x" * 50 not in notifications[0]

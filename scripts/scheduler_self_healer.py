@@ -34,7 +34,7 @@ GATEWAY_TASK = "Property Case Radar OpenAB Gateway"
 SIDECAR_TASK = "Property Case Radar OpenAB Sidecar"
 BACKUP_TASK = "Property Case Radar Database Backup"
 UMI_OCR_TASK = "Property Case Radar Umi-OCR"
-POSTGRES_SERVICE = "postgresql-x64-17"
+RUN_POSTGRES_TIMEOUT_SECONDS = 90
 
 
 def tcp_ready(host: str, port: int, timeout: float = 2) -> bool:
@@ -55,6 +55,26 @@ def http_ready(url: str, timeout: float = 2) -> bool:
         return False
 
 
+class PowerShellCommandError(subprocess.CalledProcessError):
+    """PowerShell failure whose message prefers captured stderr over the command."""
+
+    def __str__(self) -> str:
+        detail = _captured_process_text(self.stderr) or _captured_process_text(
+            self.output
+        )
+        if detail:
+            return f"PowerShell exited with {self.returncode}: {detail}"
+        return f"PowerShell exited with {self.returncode}"
+
+
+def _captured_process_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace").strip()
+    return value.strip()
+
+
 def powershell(script: str, *, timeout: int = 30) -> str:
     result = subprocess.run(
         [
@@ -70,8 +90,15 @@ def powershell(script: str, *, timeout: int = 30) -> str:
         encoding="utf-8",
         errors="replace",
         timeout=timeout,
-        check=True,
+        check=False,
     )
+    if result.returncode:
+        raise PowerShellCommandError(
+            result.returncode,
+            result.args,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
     return result.stdout.strip().lstrip("\ufeff")
 
 
@@ -127,24 +154,14 @@ def start_windows_task(name: str) -> None:
     )
 
 
-def start_postgres(service_name: str = POSTGRES_SERVICE) -> None:
-    """Start PostgreSQL, falling back to pg_ctl for non-elevated task users."""
+def start_postgres() -> None:
+    """Start the D-drive PostgreSQL runtime via scripts/run_postgres.ps1."""
 
-    escaped = service_name.replace("'", "''")
+    script = REPOSITORY_ROOT / "scripts" / "run_postgres.ps1"
+    escaped = str(script).replace("'", "''")
     powershell(
-        f"$service = Get-CimInstance Win32_Service -Filter \"Name='{escaped}'\" "
-        "-ErrorAction Stop; "
-        "if ($null -eq $service) { throw 'PostgreSQL service is missing' }; "
-        "try { Start-Service -Name $service.Name -ErrorAction Stop } catch { "
-        "$command = $service.PathName; "
-        "$pgCtl = [regex]::Match($command, '^\"([^\"]*pg_ctl\\.exe)\"').Groups[1].Value; "
-        "$data = [regex]::Match($command, '-D\\s+\"([^\"]+)\"').Groups[1].Value; "
-        "if (-not $pgCtl -or -not $data) { throw }; "
-        "$startupLog = Join-Path $data 'log\\self-heal-startup.log'; "
-        "& $pgCtl start -D $data -l $startupLog -w; "
-        "if ($LASTEXITCODE -ne 0) { throw \"pg_ctl exited with $LASTEXITCODE\" } "
-        "}",
-        timeout=60,
+        f"& '{escaped}'; if ($LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}",
+        timeout=RUN_POSTGRES_TIMEOUT_SECONDS,
     )
 
 
