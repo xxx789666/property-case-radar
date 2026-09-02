@@ -19,6 +19,7 @@ New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
 
 & $pgCtl status -D $data 2>$null
 if ($LASTEXITCODE -eq 0) {
+    $global:LASTEXITCODE = 0
     return
 }
 
@@ -276,6 +277,7 @@ if ($launch.TimedOut) {
 }
 $exitCode = [int]$launch.ExitCode
 if ($exitCode -eq 0) {
+    $global:LASTEXITCODE = 0
     return
 }
 

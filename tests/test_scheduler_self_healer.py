@@ -477,3 +477,75 @@ def test_postgres_scripts_parse_without_executing():
         timeout=30,
     )
     assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_successful_launch_clears_stale_native_lastexitcode(tmp_path):
+    launcher_text = (
+        REPOSITORY_ROOT / "scripts" / "run_postgres.ps1"
+    ).read_text(encoding="utf-8")
+    success_epilogue = "$global:LASTEXITCODE = 0"
+    assert launcher_text.count(success_epilogue) >= 2
+    assert re.search(
+        r"if \(\$LASTEXITCODE -eq 0\) \{\s*"
+        r"\$global:LASTEXITCODE = 0\s*"
+        r"return",
+        launcher_text,
+        re.S,
+    )
+    assert re.search(
+        r"if \(\$exitCode -eq 0\) \{\s*"
+        r"\$global:LASTEXITCODE = 0\s*"
+        r"return",
+        launcher_text,
+        re.S,
+    )
+
+    model = tmp_path / "stale_lastexit.ps1"
+    model.write_text(
+        "$ErrorActionPreference = 'Stop'\n"
+        "cmd.exe /c \"exit 3\" | Out-Null\n"
+        "if ($LASTEXITCODE -eq 0) { throw 'expected stale native exit code' }\n"
+        "$global:LASTEXITCODE = 0\n"
+        "return\n",
+        encoding="ascii",
+    )
+    file_result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(model),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+    )
+    assert file_result.returncode == 0, file_result.stderr or file_result.stdout
+
+    escaped = str(model).replace("'", "''")
+    ampersand_result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            f"& '{escaped}'; if ($LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+    )
+    assert ampersand_result.returncode == 0, (
+        ampersand_result.stderr or ampersand_result.stdout
+    )
