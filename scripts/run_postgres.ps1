@@ -13,7 +13,8 @@ foreach ($requiredPath in @($pgCtl, $data)) {
 
 $logDirectory = Join-Path $repositoryRoot "logs"
 $logPath = Join-Path $logDirectory "postgres-local.log"
-$controlLog = Join-Path $logDirectory "postgres-self-heal-ctl.log"
+$stdoutLog = Join-Path $logDirectory "postgres-self-heal-ctl.out.log"
+$stderrLog = Join-Path $logDirectory "postgres-self-heal-ctl.err.log"
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
 
 & $pgCtl status -D $data 2>$null
@@ -21,35 +22,58 @@ if ($LASTEXITCODE -eq 0) {
     return
 }
 
-# Start via hidden cmd with file redirection so the server process cannot
-# keep the outer captured stdout/stderr pipes open after pg_ctl exits.
-if (Test-Path -LiteralPath $controlLog) {
-    Remove-Item -LiteralPath $controlLog -Force
+foreach ($controlFile in @($stdoutLog, $stderrLog)) {
+    if (Test-Path -LiteralPath $controlFile) {
+        Remove-Item -LiteralPath $controlFile -Force
+    }
 }
 
-$startCommand = '"{0}" start -D "{1}" -l "{2}" -o "-p {3}" -w -t 60 1>"{4}" 2>&1' -f @(
-    $pgCtl,
-    $data,
-    $logPath,
-    $port,
-    $controlLog
+$argumentList = @(
+    "start",
+    "-D", $data,
+    "-l", $logPath,
+    "-o", ('"-p {0}"' -f $port),
+    "-w",
+    "-t", "60"
 )
-$process = Start-Process -FilePath $env:ComSpec `
-    -ArgumentList @('/c', $startCommand) `
-    -Wait `
+$process = Start-Process -FilePath $pgCtl `
+    -ArgumentList $argumentList `
     -PassThru `
-    -WindowStyle Hidden
+    -NoNewWindow `
+    -RedirectStandardOutput $stdoutLog `
+    -RedirectStandardError $stderrLog
+if (-not $process.WaitForExit(70000)) {
+    if (-not $process.HasExited) {
+        $process.Kill()
+    }
+    throw "PostgreSQL startup timed out waiting for pg_ctl"
+}
 $exitCode = $process.ExitCode
 if ($exitCode -eq 0) {
     return
 }
 
-$controlDetail = ""
-if (Test-Path -LiteralPath $controlLog) {
-    $controlDetail = (
-        Get-Content -LiteralPath $controlLog -ErrorAction SilentlyContinue |
+$stderrDetail = ""
+if (Test-Path -LiteralPath $stderrLog) {
+    $stderrDetail = (
+        Get-Content -LiteralPath $stderrLog -ErrorAction SilentlyContinue |
             Out-String
     ).Trim()
+}
+$stdoutDetail = ""
+if (Test-Path -LiteralPath $stdoutLog) {
+    $stdoutDetail = (
+        Get-Content -LiteralPath $stdoutLog -ErrorAction SilentlyContinue |
+            Out-String
+    ).Trim()
+}
+$controlDetail = $stderrDetail
+if ($stdoutDetail) {
+    if ($controlDetail) {
+        $controlDetail = $controlDetail + [Environment]::NewLine + $stdoutDetail
+    } else {
+        $controlDetail = $stdoutDetail
+    }
 }
 if (-not $controlDetail) {
     $controlDetail = "no control log output"

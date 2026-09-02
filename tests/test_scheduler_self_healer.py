@@ -1,3 +1,4 @@
+import re
 import subprocess
 from datetime import UTC, datetime, timedelta
 
@@ -301,7 +302,7 @@ def test_run_postgres_launcher_is_postgres_only():
     assert "start" in launcher_text
     assert "Test-Path" in launcher_text
     assert "-w" in launcher_text
-    assert "-t 60" in launcher_text
+    assert "-t 60" in launcher_text or '"-t", "60"' in launcher_text
     assert "postgres-local.log" in launcher_text
 
 
@@ -312,13 +313,21 @@ def test_run_postgres_start_detaches_native_streams_from_outer_capture():
 
     assert "& $pgCtl start" not in launcher_text
     assert "Start-Process" in launcher_text
-    assert "WindowStyle" in launcher_text
-    assert "Hidden" in launcher_text
-    assert "RedirectStandardOutput" not in launcher_text
-    assert "RedirectStandardError" not in launcher_text
-    assert "postgres-self-heal-ctl.log" in launcher_text
-    assert "2>&1" in launcher_text
-    assert "/c" in launcher_text
+    assert "-FilePath $pgCtl" in launcher_text
+    assert "ArgumentList" in launcher_text
+    assert '"-p {0}"' in launcher_text
+    assert "RedirectStandardOutput" in launcher_text
+    assert "RedirectStandardError" in launcher_text
+    assert "postgres-self-heal-ctl.out.log" in launcher_text
+    assert "postgres-self-heal-ctl.err.log" in launcher_text
+    assert "WaitForExit" in launcher_text
+    assert "70000" in launcher_text
+    assert "ComSpec" not in launcher_text
+    assert "startCommand" not in launcher_text
+    assert "/c" not in launcher_text
+    assert "2>&1" not in launcher_text
+    assert "WindowStyle" not in launcher_text
+    assert re.search(r"^\s*-Wait\b", launcher_text, re.M) is None
 
 
 def test_run_postgres_failure_rethrows_control_log_or_fallback():
@@ -327,10 +336,17 @@ def test_run_postgres_failure_rethrows_control_log_or_fallback():
     ).read_text(encoding="utf-8")
 
     assert "Get-Content" in launcher_text
-    assert "postgres-self-heal-ctl.log" in launcher_text
+    assert "$stderrDetail" in launcher_text
+    assert "$stdoutDetail" in launcher_text
+    assert launcher_text.find("$stderrDetail") < launcher_text.find("$stdoutDetail")
+    assert "postgres-self-heal-ctl.err.log" in launcher_text
+    assert "postgres-self-heal-ctl.out.log" in launcher_text
     assert "PostgreSQL startup failed" in launcher_text
+    assert "timed out" in launcher_text.lower()
     assert "no control log output" in launcher_text
     assert "$exitCode" in launcher_text
+    assert "HasExited" in launcher_text
+    assert "Kill()" in launcher_text
 
 
 def test_powershell_uses_execution_policy_bypass(monkeypatch):
