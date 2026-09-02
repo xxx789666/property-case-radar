@@ -165,6 +165,7 @@ def test_start_postgres_invokes_run_postgres_script(monkeypatch):
 
     script_path = REPOSITORY_ROOT / "scripts" / "run_postgres.ps1"
     escaped = str(script_path).replace("'", "''")
+    assert script_path.is_file()
     assert f"& '{escaped}'" in captured["script"]
     assert "Win32_Service" not in captured["script"]
     assert "postgresql-x64-17" not in captured["script"]
@@ -281,3 +282,55 @@ def test_heal_component_failure_keeps_stderr_despite_long_command(
     assert "pg_ctl: PID file is missing" in notifications[0]
     assert "1" in notifications[0]
     assert "x" * 50 not in notifications[0]
+
+
+def test_run_postgres_launcher_exists_and_uses_d_runtime():
+    launcher = REPOSITORY_ROOT / "scripts" / "run_postgres.ps1"
+    runtime = REPOSITORY_ROOT / "scripts" / "use_d_runtime.ps1"
+    assert launcher.is_file()
+    assert runtime.is_file()
+
+    launcher_text = launcher.read_text(encoding="utf-8")
+    runtime_text = runtime.read_text(encoding="utf-8")
+
+    assert "use_d_runtime.ps1" in launcher_text
+    assert "pg_ctl" in launcher_text
+    assert "status" in launcher_text
+    assert "start" in launcher_text
+    assert "$RadarPostgresData" in launcher_text
+    assert "$RadarPostgresPort" in launcher_text
+
+    assert 'D:\\PostgreSQL\\17\\bin' in runtime_text
+    assert 'D:\\PostgreSQL\\17\\data' in runtime_text
+    assert "15432" in runtime_text
+    assert "Test-Path" in runtime_text
+    assert "pg_ctl.exe" in runtime_text
+    assert "$RadarPostgresData" in runtime_text
+    assert "$RadarPostgresPort" in runtime_text
+
+
+def test_postgres_scripts_parse_without_executing():
+    for name in ("run_postgres.ps1", "use_d_runtime.ps1"):
+        path = REPOSITORY_ROOT / "scripts" / name
+        escaped = str(path).replace("'", "''")
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                (
+                    "$parseErrors = $null; "
+                    "[void][System.Management.Automation.Language.Parser]::ParseFile("
+                    f"'{escaped}', [ref]$null, [ref]$parseErrors); "
+                    "if ($parseErrors) { $parseErrors | ForEach-Object { $_.ToString() }; exit 1 }"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
