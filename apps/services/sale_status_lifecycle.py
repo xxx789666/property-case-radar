@@ -12,6 +12,12 @@ from sqlalchemy.orm import Session
 from crawlers.sale.captured_status import ListingStatusCheck
 from database.models.base import utcnow
 from database.models.sale import Property
+from apps.services.performance import measure_stage
+
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 class SaleStatusVerifier(Protocol):
@@ -55,16 +61,17 @@ async def reconcile_stale_sale_listings(
     if not candidates:
         return SaleStatusResult()
 
-    statuses = await verifier.verify(
-        [
-            ListingStatusCheck(
-                id=item.id,
-                source_property_id=item.source_property_id,
-                url=item.url,
-            )
-            for item in candidates
-        ]
-    )
+    with measure_stage(logger, "verify", source, items=len(candidates)):
+        statuses = await verifier.verify(
+            [
+                ListingStatusCheck(
+                    id=item.id,
+                    source_property_id=item.source_property_id,
+                    url=item.url,
+                )
+                for item in candidates
+            ]
+        )
     confirmed_active = 0
     marked_inactive = 0
     unknown = 0

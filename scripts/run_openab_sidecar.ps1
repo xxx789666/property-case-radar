@@ -1,17 +1,19 @@
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "use_d_runtime.ps1")
 $runtimeDir = Join-Path $repoRoot "openab\.runtime"
 $logDir = Join-Path $repoRoot "logs"
-$nodeExe = (Get-Command node -ErrorAction Stop).Source
-$pythonExe = "C:\Users\xx\AppData\Local\Programs\Python\Python313\python.exe"
+$nodeExe = $RadarNodeExe
+$pythonExe = $RadarPythonExe
 $agentEntry = Join-Path $runtimeDir "npm\node_modules\@agentclientprotocol\codex-acp\dist\index.js"
 $bridgeServer = Join-Path $repoRoot "openab\sidecar\bridge-server.mjs"
 $subscriptionBroker = Join-Path $repoRoot "scripts\subscription_broker.py"
 $subscriptionBrokerLog = Join-Path $logDir "subscription-broker.log"
 $subscriptionBrokerErrorLog = Join-Path $logDir "subscription-broker.stderr.log"
 $subscriptionBrokerToken = Join-Path $repoRoot "openab\.local\subscription_broker_token"
-$dbSecret = Join-Path $repoRoot "openab\.local\radar_agent_database_url"
+$dbSecretSource = Join-Path $repoRoot "openab\.local\radar_agent_database_url"
+$dbSecret = Join-Path $runtimeDir "radar_agent_database_url_local"
 $queryLog = Join-Path $logDir "openab-query.jsonl"
 $componentLog = Join-Path $logDir "openab-sidecar.log"
 $downloadRoot = $env:AUCTION_CAPTURE_DOWNLOAD_DIR
@@ -30,10 +32,19 @@ if (-not $downloadRoot) {
 New-Item -ItemType Directory -Force $logDir | Out-Null
 if (-not (Test-Path -LiteralPath $agentEntry)) { throw "codex-acp is not installed: $agentEntry" }
 if (-not (Test-Path -LiteralPath $pythonExe)) { throw "Radar Python is not installed: $pythonExe" }
-if (-not (Test-Path -LiteralPath $dbSecret)) { throw "Read-only database secret is missing: $dbSecret" }
+if (-not (Test-Path -LiteralPath $dbSecretSource)) { throw "Read-only database secret is missing: $dbSecretSource" }
 if (-not (Test-Path -LiteralPath $subscriptionBroker)) { throw "Subscription broker is missing: $subscriptionBroker" }
 if (-not $downloadRoot) { throw "AUCTION_CAPTURE_DOWNLOAD_DIR is not configured" }
 Set-Location -LiteralPath $repoRoot
+
+$localDatabaseUrl = [IO.File]::ReadAllText($dbSecretSource).Trim().Replace(
+    "@127.0.0.1:5432/",
+    "@127.0.0.1:$RadarPostgresPort/"
+).Replace(
+    "@localhost:5432/",
+    "@localhost:$RadarPostgresPort/"
+)
+[IO.File]::WriteAllText($dbSecret, $localDatabaseUrl, [Text.UTF8Encoding]::new($false))
 
 # Task Scheduler can terminate this PowerShell host before its finally
 # block runs, leaving an older subscription broker alive on port 18767.

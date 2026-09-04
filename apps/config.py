@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     rental_high_score_digest_limit: int = Field(default=20, ge=1, le=50)
     rental_status_missing_days: int = Field(default=3, ge=1, le=30)
     rental_status_verify_limit: int = Field(default=500, ge=1, le=2000)
+    rental_business_status_verify_limit: int = Field(default=50, ge=0, le=2000)
+    rental_status_verify_workers: int = Field(default=4, ge=1, le=8)
     discord_system_alert_channel_id: int = 1532653523588616242
     sale_scheduler_daily_hour: int = Field(default=12, ge=0, le=23)
     sale_scheduler_daily_minute: int = Field(default=0, ge=0, le=59)
@@ -57,6 +59,7 @@ class Settings(BaseSettings):
     housefun_status_verify_limit: int = Field(default=50, ge=1, le=200)
     sale_status_missing_days: int = Field(default=3, ge=1, le=30)
     sale_status_verify_limit: int = Field(default=500, ge=1, le=2000)
+    sale_status_verify_workers: int = Field(default=4, ge=1, le=8)
     crawler_min_delay_seconds: float = Field(default=2, ge=0)
     crawler_max_delay_seconds: float = Field(default=5, ge=0)
 

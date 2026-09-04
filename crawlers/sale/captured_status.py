@@ -29,10 +29,12 @@ class CapturedSaleStatusVerifier:
         *,
         python_executable: str = sys.executable,
         timeout_seconds: float = 60 * 60,
+        workers: int = 4,
     ) -> None:
         self.script_path = Path(script_path)
         self.python_executable = python_executable
         self.timeout_seconds = timeout_seconds
+        self.workers = workers
 
     async def verify(
         self,
@@ -63,6 +65,7 @@ class CapturedSaleStatusVerifier:
                 ),
                 encoding="utf-8",
             )
+            browser_path = Path(__file__).resolve().parents[2] / ".runtime" / "playwright"
             process = await asyncio.create_subprocess_exec(
                 self.python_executable,
                 str(self.script_path),
@@ -71,12 +74,15 @@ class CapturedSaleStatusVerifier:
                 "--verify-output",
                 str(output_path),
                 "--headless",
+                "--verify-workers",
+                str(self.workers),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env={
                     **os.environ,
                     "PYTHONUTF8": "1",
                     "PYTHONIOENCODING": "utf-8",
+                    "PLAYWRIGHT_BROWSERS_PATH": os.environ.get("PLAYWRIGHT_BROWSERS_PATH", str(browser_path)),
                 },
             )
             try:

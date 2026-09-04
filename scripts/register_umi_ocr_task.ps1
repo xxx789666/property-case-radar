@@ -1,6 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "use_d_runtime.ps1")
 $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $taskName = "Property Case Radar Umi-OCR"
 $executable = "D:\Umi-OCR_Paddle_v2.1.5\Umi-OCR.exe"
@@ -20,7 +21,7 @@ if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
 
 Push-Location $repoRoot
 try {
-    & python -X utf8 "scripts\umi_ocr_service.py" `
+    & $RadarPythonExe -X utf8 "scripts\umi_ocr_service.py" `
         --ensure-compatibility $executable
     if ($LASTEXITCODE -ne 0) { throw "Umi-OCR compatibility check failed" }
 }

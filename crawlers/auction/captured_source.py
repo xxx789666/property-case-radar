@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import hashlib
 import json
 import logging
 import os
@@ -20,6 +21,7 @@ from pypdf import PdfReader
 from scripts.umi_ocr_service import launch_umi_ocr, umi_ocr_ready
 
 from crawlers.capture_retention import remove_expired_capture_json
+from apps.services.performance import measure_stage
 from crawlers.auction.court_crawler import (
     AuctionAnnouncementSource,
     CompliancePolicy,
@@ -84,8 +86,11 @@ class CapturedAuctionAnnouncementSource(AuctionAnnouncementSource):
         await self._ensure_ocr_ready()
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.download_dir.mkdir(parents=True, exist_ok=True)
-        result_path = await self._run_capture_process()
-        announcements = self.load_result(result_path)
+        with measure_stage(logger, "capture", "moj-auction"):
+            result_path = await self._run_capture_process()
+        with measure_stage(logger, "parse", "moj-auction") as measurement:
+            announcements = self.load_result(result_path)
+            measurement.items = len(announcements)
         try:
             removed = remove_expired_capture_json(
                 self.output_dir,
@@ -112,19 +117,23 @@ class CapturedAuctionAnnouncementSource(AuctionAnnouncementSource):
             county_output.mkdir(parents=True, exist_ok=True)
             county_downloads.mkdir(parents=True, exist_ok=True)
             try:
-                result_path = await self._run_capture_process(
-                    "--output-dir",
-                    str(county_output),
-                    "--download-dir",
-                    str(county_downloads),
-                    "--single-query",
-                    "--county",
-                    county,
-                    "--auto-query",
-                    "--auto-paginate",
-                    "--download-files",
-                )
-                announcements.extend(self.load_result(result_path))
+                with measure_stage(logger, "retry", f"moj-auction:{county}"):
+                    result_path = await self._run_capture_process(
+                        "--output-dir",
+                        str(county_output),
+                        "--download-dir",
+                        str(county_downloads),
+                        "--single-query",
+                        "--county",
+                        county,
+                        "--auto-query",
+                        "--auto-paginate",
+                        "--download-files",
+                    )
+                with measure_stage(logger, "parse", f"moj-auction:{county}") as measurement:
+                    county_announcements = self.load_result(result_path)
+                    measurement.items = len(county_announcements)
+                    announcements.extend(county_announcements)
             except AuctionCaptureError:
                 remaining.append(county)
         self.last_failed_counties = tuple(remaining)
@@ -219,9 +228,19 @@ class CapturedAuctionAnnouncementSource(AuctionAnnouncementSource):
                     if not pdf_path.is_file():
                         continue
                     try:
-                        text = "\n".join(
-                            page.extract_text() or "" for page in PdfReader(pdf_path).pages
-                        )
+                        text_cache = pdf_path.with_suffix(".txt")
+                        digest_path = pdf_path.with_suffix(".sha256")
+                        digest = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+                        cached_digest = digest_path.read_text(encoding="ascii").strip() if digest_path.is_file() else ""
+                        if text_cache.is_file() and cached_digest == digest:
+                            text = text_cache.read_text(encoding="utf-8")
+                        else:
+                            text = "\n".join(
+                                page.extract_text() or "" for page in PdfReader(pdf_path).pages
+                            )
+                            if text.strip():
+                                text_cache.write_text(text, encoding="utf-8")
+                                digest_path.write_text(digest, encoding="ascii")
                     except Exception:
                         continue
                     if text.strip():

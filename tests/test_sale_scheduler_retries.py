@@ -48,6 +48,14 @@ class PartialSaleSource(SaleCrawler):
         return [_listing()]
 
 
+class RecordingDeferredRetries:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def schedule(self, **values: object) -> bool:
+        self.calls.append(values)
+        return True
+
 def test_partial_sale_source_retries_and_recovers(session_factory, tmp_path) -> None:
     source = PartialSaleSource(recover=True)
     crawler = CompositeSaleCrawler({"591": source})
@@ -88,3 +96,32 @@ def test_unresolved_partial_sale_source_fails_job_for_outer_recovery(
 
     assert source.retry_calls == 2
     assert sleep_mock.await_count == 2
+
+
+def test_partial_sale_source_schedules_nonblocking_date_retry(
+    session_factory, tmp_path
+) -> None:
+    source = PartialSaleSource(recover=True)
+    crawler = CompositeSaleCrawler({"591": source})
+    deferred = RecordingDeferredRetries()
+    settings = Settings(
+        database_url="sqlite://",
+        discord_token=None,
+        system_alert_state_path=tmp_path / "alerts.json",
+        sale_failed_retry_delay_minutes=15,
+        sale_failed_retry_rounds=3,
+    )
+
+    with patch("apps.scheduler.main.asyncio.sleep", AsyncMock()) as sleep_mock:
+        make_live_sale_job(
+            session_factory,
+            crawler,
+            settings,
+            deferred_retries=deferred,
+        )()
+
+    assert source.retry_calls == 0
+    sleep_mock.assert_not_awaited()
+    assert len(deferred.calls) == 1
+    assert deferred.calls[0]["key"] == "sale-591"
+    assert deferred.calls[0]["regions"] == ("臺北市",)

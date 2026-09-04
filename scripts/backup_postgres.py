@@ -22,9 +22,7 @@ from apps.config import get_settings
 
 
 POSTGRES_BIN_DIRS = (
-    Path(r"C:\Program Files\PostgreSQL\17\bin"),
-    Path(r"C:\Program Files\PostgreSQL\16\bin"),
-    Path(r"C:\Program Files\PostgreSQL\15\bin"),
+    Path(r"D:\PostgreSQL\17\bin"),
 )
 
 
@@ -214,6 +212,7 @@ def create_verified_backup() -> Path:
                     "custom",
                     "--no-owner",
                     "--no-privileges",
+                    "--exclude-schema=radar_staging",
                     "--file",
                     str(partial_archive),
                 ],

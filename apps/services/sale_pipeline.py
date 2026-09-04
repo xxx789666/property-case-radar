@@ -1,12 +1,14 @@
 from dataclasses import dataclass
 from decimal import Decimal
+from collections.abc import Mapping
+import logging
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session
 
 from crawlers.sale.base import SaleCrawler
 from database.models.common import MarketPrice
-from database.models.sale import Property
+from database.models.sale import Property, PropertyPriceHistory
 from database.repositories.sale import PropertyRepository
 from scoring.sale_score import SaleScoreInput, score_sale
 from scoring.land_score import LandScoreInput, score_land
@@ -19,8 +21,13 @@ from apps.services.high_score_digest import (
     deliver_high_score_digest,
     queue_sale_high_score,
 )
+from apps.services.performance import measure_stage
+
+
+logger = logging.getLogger(__name__)
 
 MAX_STORABLE_DISCOUNT_RATE = Decimal("999.9999")
+_PRELOAD_BATCH_SIZE = 100
 
 
 def land_market_type(usage: str | None) -> str | None:
@@ -48,6 +55,12 @@ def land_market_type(usage: str | None) -> str | None:
     ):
         categories.add("土地:建地")
     return categories.pop() if len(categories) == 1 else None
+
+
+def _market_type_for_item(item: Property) -> str | None:
+    if item.building_type == "土地":
+        return land_market_type(item.usage)
+    return item.building_type if item.building_type in {"住宅", "店面"} else "住宅"
 
 
 @dataclass(frozen=True)
@@ -87,6 +100,7 @@ def apply_market_score(
     session: Session,
     *,
     price_drop_rate: float = 0,
+    market_prices: Mapping[tuple[str, str, str], MarketPrice] | None = None,
 ) -> bool:
     if item.building_type == "土地":
         market_type = land_market_type(item.usage)
@@ -101,11 +115,15 @@ def apply_market_score(
             if item.building_type in {"住宅", "店面"}
             else "住宅"
         )
-    market = session.scalar(
-        select(MarketPrice).where(
-            MarketPrice.city == item.city,
-            MarketPrice.district == item.district,
-            MarketPrice.building_type == market_type,
+    market = (
+        market_prices.get((item.city, item.district, market_type))
+        if market_prices is not None
+        else session.scalar(
+            select(MarketPrice).where(
+                MarketPrice.city == item.city,
+                MarketPrice.district == item.district,
+                MarketPrice.building_type == market_type,
+            )
         )
     )
     if market is None:
@@ -158,7 +176,15 @@ def rescore_sale_inventory(session: Session) -> RescoreResult:
             select(Property).where(Property.status == "active")
         )
     )
-    scored = sum(apply_market_score(item, session) for item in items)
+    market_prices = {
+        (item.city, item.district, item.building_type): item
+        for item in session.scalars(select(MarketPrice))
+    }
+    with measure_stage(logger, "score", "sale-inventory", items=len(items)):
+        scored = sum(
+            apply_market_score(item, session, market_prices=market_prices)
+            for item in items
+        )
     session.commit()
     return RescoreResult(
         processed=len(items),
@@ -179,25 +205,68 @@ async def ingest_sale_listings(
 ) -> IngestResult:
     repository = PropertyRepository(session)
     listings = await crawler.fetch()
+    keys = {(item.source, item.source_property_id) for item in listings}
+    existing_by_key: dict[tuple[str, str], Property] = {}
+    if keys:
+        key_list = list(keys)
+        for offset in range(0, len(key_list), _PRELOAD_BATCH_SIZE):
+            batch = key_list[offset : offset + _PRELOAD_BATCH_SIZE]
+            existing_by_key.update(
+                {
+                    (item.source, item.source_property_id): item
+                    for item in session.scalars(
+                        select(Property).where(
+                            tuple_(Property.source, Property.source_property_id).in_(batch)
+                        )
+                    )
+                }
+            )
+    market_prices = {
+        (item.city, item.district, item.building_type): item
+        for item in session.scalars(select(MarketPrice))
+    }
     created_count = 0
     price_drops = 0
-    notification_events: list[tuple[Property, bool, bool]] = []
-    for listing in listings:
-        previous = session.scalar(
-            select(Property).where(
-                Property.source == listing.source,
-                Property.source_property_id == listing.source_property_id,
-            )
+    notification_events: list[tuple[Property, bool, bool, float]] = []
+    with measure_stage(logger, "ingest", "sale", items=len(listings)):
+        native_items = (
+            repository.bulk_upsert_listings(listings)
+            if session.bind is not None and session.bind.dialect.name == "postgresql"
+            else None
         )
-        previous_price = previous.total_price_twd if previous else listing.total_price_twd
-        item, created, dropped = repository.upsert_listing(listing)
-        if created and backfill:
-            item.is_backfill = True
-        drop_rate = max(0.0, 1 - item.total_price_twd / previous_price)
-        apply_market_score(item, session, price_drop_rate=drop_rate)
-        created_count += int(created)
-        price_drops += int(dropped)
-        notification_events.append((item, created, dropped))
+        for listing in listings:
+            key = (listing.source, listing.source_property_id)
+            previous = existing_by_key.get(key)
+            previous_price = (
+                previous.total_price_twd if previous else listing.total_price_twd
+            )
+            if native_items is not None:
+                item = native_items[key]
+                created = previous is None
+                dropped = previous is not None and listing.total_price_twd < previous.total_price_twd
+                if previous is None:
+                    session.add(PropertyPriceHistory(property=item, total_price_twd=listing.total_price_twd, unit_price_per_ping_twd=listing.unit_price_per_ping_twd))
+                elif listing.total_price_twd != previous.total_price_twd:
+                    session.add(PropertyPriceHistory(property=item, total_price_twd=listing.total_price_twd, unit_price_per_ping_twd=listing.unit_price_per_ping_twd))
+            else:
+                item, created, dropped = repository.upsert_listing(listing, existing=previous, flush=False)
+            existing_by_key[key] = item
+            if created and backfill:
+                item.is_backfill = True
+            drop_rate = max(0.0, 1 - item.total_price_twd / previous_price)
+            created_count += int(created)
+            price_drops += int(dropped)
+            notification_events.append((item, created, dropped, drop_rate))
+        session.flush()
+    with measure_stage(logger, "score", "sale", items=len(notification_events)):
+        for item, _, _, drop_rate in notification_events:
+            apply_market_score(
+                item,
+                session,
+                price_drop_rate=drop_rate,
+                market_prices=market_prices,
+            )
+    for item, created, dropped, _ in notification_events:
         queue_sale_high_score(
             session,
             item,
@@ -209,7 +278,7 @@ async def ingest_sale_listings(
             queue_sale_subscription_matches(session, item)
     session.commit()
     if notifier is not None:
-        for item, created, dropped in notification_events:
+        for item, created, dropped, _ in notification_events:
             await notifier.publish(
                 item,
                 created=created,

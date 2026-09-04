@@ -12,6 +12,12 @@ from sqlalchemy.orm import Session
 from crawlers.rental.captured_status import RentalStatusCheck
 from database.models.base import utcnow
 from database.models.rental import RentalProperty
+from apps.services.performance import measure_stage
+
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 class RentalStatusVerifier(Protocol):
@@ -53,16 +59,17 @@ async def reconcile_stale_rental_listings(
     )
     if not candidates:
         return RentalStatusResult()
-    statuses = await verifier.verify(
-        [
-            RentalStatusCheck(
-                id=item.id,
-                source_property_id=item.source_property_id,
-                url=item.url,
-            )
-            for item in candidates
-        ]
-    )
+    with measure_stage(logger, "verify", source, items=len(candidates)):
+        statuses = await verifier.verify(
+            [
+                RentalStatusCheck(
+                    id=item.id,
+                    source_property_id=item.source_property_id,
+                    url=item.url,
+                )
+                for item in candidates
+            ]
+        )
     confirmed_active = marked_inactive = unknown = 0
     for item in candidates:
         status = statuses.get(item.id, "unknown")

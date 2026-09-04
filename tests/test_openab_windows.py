@@ -73,7 +73,8 @@ def test_windows_wrappers_start_restricted_pdf_broker_without_exposing_token_to_
     assert 'Remove-Item Env:OPENAB_DISCORD_BOT_TOKEN' in gateway
     assert 'RADAR_PDF_UPLOAD_BROKER_URL' in sidecar
     assert 'RADAR_AUCTION_DOWNLOAD_DIR' in sidecar
-    assert 'Python313\\python.exe' in sidecar
+    assert '$pythonExe = $RadarPythonExe' in sidecar
+    assert 'use_d_runtime.ps1' in sidecar
     assert '$env:PATH = "$(Split-Path -Parent $pythonExe);$env:PATH"' in sidecar
     assert "Get-CimInstance Win32_Process" in sidecar
     assert "Previous subscription broker did not release port 18767" in sidecar

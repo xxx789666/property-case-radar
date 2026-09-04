@@ -1,10 +1,11 @@
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "use_d_runtime.ps1")
 $runtimeDir = Join-Path $repoRoot "openab\.runtime"
 $logDir = Join-Path $repoRoot "logs"
 $openabExe = Join-Path $runtimeDir "bin\openab.exe"
-$nodeExe = (Get-Command node -ErrorAction Stop).Source
+$nodeExe = $RadarNodeExe
 $configTemplate = Join-Path $repoRoot "openab\windows\config-radar-agent.toml"
 $runtimeConfig = Join-Path $runtimeDir "config-radar-agent.toml"
 $tokenSecret = Join-Path $repoRoot "openab\.local\openab_discord_bot_token"
@@ -43,7 +44,7 @@ Set-Location -LiteralPath $repoRoot
 $brokerProcess = $null
 $env:OPENAB_DISCORD_BOT_TOKEN = [IO.File]::ReadAllText($tokenSecret).Trim()
 try {
-    & python -X utf8 $allowlistSyncScript `
+    & $RadarPythonExe -X utf8 $allowlistSyncScript `
         --token-file $tokenSecret `
         --role-id-file $roleIdFile `
         --allowlist-file $allowlistFile `
@@ -51,7 +52,7 @@ try {
         --verification-message-id-file $verificationMessageIdFile
     if ($LASTEXITCODE -ne 0) { throw "Discord Q&A allowlist sync failed: $LASTEXITCODE" }
 
-    & python -X utf8 (Join-Path $repoRoot "openab\gateway\runtime_config.py") `
+    & $RadarPythonExe -X utf8 (Join-Path $repoRoot "openab\gateway\runtime_config.py") `
         $configTemplate $runtimeConfig $allowlistFile
     if ($LASTEXITCODE -ne 0) { throw "OpenAB runtime config rendering failed: $LASTEXITCODE" }
 
@@ -108,7 +109,6 @@ try {
 
 $env:RADAR_BRIDGE_CLIENT = (Join-Path $repoRoot "openab\gateway\bridge-client.mjs") -replace "\\","/"
 $env:RADAR_AGENT_WORKING_DIR = (Join-Path $repoRoot "openab\sidecar") -replace "\\","/"
-$env:HOME = $env:USERPROFILE
 $env:RUST_BACKTRACE = "0"
 
 "$(Get-Date -Format o) gateway wrapper starting" | Add-Content -LiteralPath $componentLog -Encoding utf8

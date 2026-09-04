@@ -13,6 +13,7 @@ from pathlib import Path
 
 from crawlers.capture_retention import remove_expired_capture_json
 from crawlers.sale.base import CompliancePolicy, SaleCrawler, SaleListing
+from apps.services.performance import measure_stage
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +66,19 @@ class CapturedSaleCrawler(SaleCrawler):
         selected_city = city or self.city
         if selected_city:
             arguments.extend(["--city", selected_city])
+        browser_path = Path(__file__).resolve().parents[2] / ".runtime" / "playwright"
         process = await asyncio.create_subprocess_exec(
             *arguments,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+            env={
+                **os.environ,
+                "PYTHONUTF8": "1",
+                "PYTHONIOENCODING": "utf-8",
+                "PLAYWRIGHT_BROWSERS_PATH": os.environ.get(
+                    "PLAYWRIGHT_BROWSERS_PATH", str(browser_path)
+                ),
+            },
         )
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), self.timeout_seconds)
@@ -90,8 +99,11 @@ class CapturedSaleCrawler(SaleCrawler):
     async def fetch(self) -> list[SaleListing]:
         self.last_health_error = None
         self.last_failed_cities = ()
-        result_path = await self._capture_result_path()
-        listings = self.load_result(result_path)
+        with measure_stage(logger, "capture", "591-sale"):
+            result_path = await self._capture_result_path()
+        with measure_stage(logger, "parse", "591-sale") as measurement:
+            listings = self.load_result(result_path)
+            measurement.items = len(listings)
         try:
             removed = remove_expired_capture_json(
                 self.output_dir,
@@ -109,8 +121,11 @@ class CapturedSaleCrawler(SaleCrawler):
         unresolved: list[str] = []
         for city in cities:
             try:
-                result_path = await self._capture_result_path(city=city)
-                city_listings = self.load_result(result_path)
+                with measure_stage(logger, "retry", f"591-sale:{city}"):
+                    result_path = await self._capture_result_path(city=city)
+                with measure_stage(logger, "parse", f"591-sale:{city}") as measurement:
+                    city_listings = self.load_result(result_path)
+                    measurement.items = len(city_listings)
                 listings.extend(city_listings)
                 if self.last_failed_cities:
                     unresolved.append(city)

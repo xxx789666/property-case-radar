@@ -2,11 +2,17 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import Select, desc, select
+from sqlalchemy import Select, desc, select, tuple_
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, selectinload
 
 from crawlers.sale.base import SaleListing
 from database.models.sale import Property, PropertyPriceHistory, PropertySubscription
+
+
+_NOT_PROVIDED = object()
+_PRELOAD_BATCH_SIZE = 100
+_UPSERT_BATCH_SIZE = 500
 
 
 @dataclass(frozen=True)
@@ -24,27 +30,38 @@ class PropertyRepository:
     def __init__(self, session: Session):
         self.session = session
 
-    def upsert_listing(self, listing: SaleListing) -> tuple[Property, bool, bool]:
-        item = self.session.scalar(
-            select(Property).where(
-                Property.source == listing.source,
-                Property.source_property_id == listing.source_property_id,
+    def upsert_listing(
+        self,
+        listing: SaleListing,
+        *,
+        existing: Property | None | object = _NOT_PROVIDED,
+        flush: bool = True,
+    ) -> tuple[Property, bool, bool]:
+        item = existing
+        if item is _NOT_PROVIDED:
+            item = self.session.scalar(
+                select(Property).where(
+                    Property.source == listing.source,
+                    Property.source_property_id == listing.source_property_id,
+                )
             )
-        )
         now = datetime.now(timezone.utc)
         if item is None:
             item = Property(**listing.to_property_values(), first_seen_at=now, last_seen_at=now)
             self.session.add(item)
-            self.session.flush()
             self.session.add(
                 PropertyPriceHistory(
-                    property_id=item.id,
+                    property=item,
                     total_price_twd=listing.total_price_twd,
                     unit_price_per_ping_twd=listing.unit_price_per_ping_twd,
                     observed_at=now,
                 )
             )
+            if flush:
+                self.session.flush()
             return item, True, False
+
+        assert isinstance(item, Property)
 
         price_dropped = listing.total_price_twd < item.total_price_twd
         price_changed = listing.total_price_twd != item.total_price_twd
@@ -54,14 +71,64 @@ class PropertyRepository:
         if price_changed:
             self.session.add(
                 PropertyPriceHistory(
-                    property_id=item.id,
+                    property=item,
                     total_price_twd=listing.total_price_twd,
                     unit_price_per_ping_twd=listing.unit_price_per_ping_twd,
                     observed_at=now,
                 )
             )
-        self.session.flush()
+        if flush:
+            self.session.flush()
         return item, False, price_dropped
+
+    def bulk_upsert_listings(self, listings: list[SaleListing]) -> dict[tuple[str, str], Property]:
+        """PostgreSQL-native batch upsert; SQLite/test sessions use the ORM fallback."""
+        if not listings:
+            return {}
+        if len(listings) > _UPSERT_BATCH_SIZE and self.session.bind is not None and self.session.bind.dialect.name == "postgresql":
+            result: dict[tuple[str, str], Property] = {}
+            for offset in range(0, len(listings), _UPSERT_BATCH_SIZE):
+                result.update(self.bulk_upsert_listings(listings[offset : offset + _UPSERT_BATCH_SIZE]))
+            return result
+        if self.session.bind is None or self.session.bind.dialect.name != "postgresql":
+            result: dict[tuple[str, str], Property] = {}
+            for listing in listings:
+                item, _, _ = self.upsert_listing(listing, flush=False)
+                result[(listing.source, listing.source_property_id)] = item
+            self.session.flush()
+            return result
+        now = datetime.now(timezone.utc)
+        rows = []
+        for listing in listings:
+            rows.append({**listing.to_property_values(), "first_seen_at": now, "last_seen_at": now})
+        stmt = pg_insert(Property).values(rows)
+        update_values = {
+            key: getattr(stmt.excluded, key)
+            for key in rows[0]
+            if key not in {"source", "source_property_id", "first_seen_at"}
+        }
+        update_values["last_seen_at"] = now
+        self.session.execute(
+            stmt.on_conflict_do_update(
+                constraint="uq_property_source_id", set_=update_values
+            )
+        )
+        self.session.flush()
+        keys = [(x.source, x.source_property_id) for x in listings]
+        result: dict[tuple[str, str], Property] = {}
+        for offset in range(0, len(keys), _PRELOAD_BATCH_SIZE):
+            batch = keys[offset : offset + _PRELOAD_BATCH_SIZE]
+            result.update(
+                {
+                    (item.source, item.source_property_id): item
+                    for item in self.session.scalars(
+                        select(Property).where(
+                            tuple_(Property.source, Property.source_property_id).in_(batch)
+                        )
+                    )
+                }
+            )
+        return result
 
     def get(self, property_id: int) -> Property | None:
         return self.session.scalar(

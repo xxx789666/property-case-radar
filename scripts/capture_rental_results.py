@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import json
 import re
@@ -13,6 +14,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
+from apps.services.status_prefilter import get_cached, http_prefilter, load_status_cache, put_cached, save_status_cache
 
 DEFAULT_OUTPUT_DIR = Path(r"D:\網頁識別認證\rental_json")
 REGIONS = {
@@ -23,6 +25,7 @@ REGIONS = {
     "金門縣": 25, "連江縣": 26,
 }
 CHALLENGE_MARKERS = ("驗證碼", "存取遭拒", "Access Denied", "請完成驗證")
+BLOCKED_RESOURCE_TYPES = frozenset({"image", "media", "font"})
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -40,7 +43,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verify-input", type=Path)
     parser.add_argument("--verify-output", type=Path)
     parser.add_argument("--verify-delay", type=float, default=0.5)
+    parser.add_argument("--verify-workers", type=int, default=4, choices=range(1, 9))
+    parser.add_argument("--status-cache", type=Path)
     return parser
+
+
+def block_unneeded_resources(route) -> None:
+    """Avoid downloading assets that are irrelevant to text/card extraction."""
+
+    if route.request.resource_type in BLOCKED_RESOURCE_TYPES:
+        route.abort()
+    else:
+        route.continue_()
 
 
 RENTAL_KINDS = (0, 24)
@@ -316,6 +330,7 @@ def capture_city(city: str, region_id: int, args: argparse.Namespace) -> tuple[l
                     timezone_id="Asia/Taipei",
                     viewport={"width": 1440, "height": 1200},
                 )
+                context.route("**/*", block_unneeded_resources)
                 page = context.new_page()
                 targets: list[tuple[int, int, int | None]] = [
                     (
@@ -508,42 +523,130 @@ def capture(args: argparse.Namespace) -> Path:
     return output
 
 
-def verify_statuses(args: argparse.Namespace) -> Path:
-    from playwright.sync_api import sync_playwright
+async def _verify_status_items(
+    args: argparse.Namespace, items: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    from playwright.async_api import async_playwright
 
-    if args.verify_input is None or not args.verify_input.is_file():
-        raise ValueError("verify-input must be an existing JSON file")
-    items = json.loads(args.verify_input.read_text(encoding="utf-8"))
-    results: list[dict[str, object]] = []
-    inactive_markers = ("物件已下架", "物件不存在", "查詢的物件不存在", "已成交")
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=args.headless)
-        try:
-            page = browser.new_page(locale="zh-TW")
-            for item in items:
-                url = normalize_detail_url(str(item.get("url", "")))
-                try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=args.timeout_ms)
-                    page.wait_for_timeout(300)
-                    body = page.locator("body").inner_text(timeout=args.timeout_ms)
-                    if any(marker in body for marker in CHALLENGE_MARKERS):
+    cache_path = args.status_cache or (args.output_dir / "rental_status_cache.json")
+    status_cache = load_status_cache(cache_path)
+    results: list[dict[str, object] | None] = [None] * len(items)
+    queue: asyncio.Queue[tuple[int, dict[str, object]] | None] = asyncio.Queue()
+    for index, item in enumerate(items):
+        queue.put_nowait((index, item))
+
+    domain_locks: dict[str, asyncio.Lock] = {}
+    next_request_at: dict[str, float] = {}
+
+    async def wait_for_rate_limit(url: str) -> None:
+        domain = urlparse(url).netloc.lower()
+        lock = domain_locks.setdefault(domain, asyncio.Lock())
+        async with lock:
+            now = asyncio.get_running_loop().time()
+            delay = max(0.0, next_request_at.get(domain, 0.0) - now)
+            if delay:
+                await asyncio.sleep(delay)
+            next_request_at[domain] = asyncio.get_running_loop().time() + max(
+                0.0, args.verify_delay
+            )
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=args.headless)
+        context = await browser.new_context(locale="zh-TW")
+
+        async def route_assets(route) -> None:
+            if route.request.resource_type in BLOCKED_RESOURCE_TYPES:
+                await route.abort()
+            else:
+                await route.continue_()
+
+        await context.route("**/*", route_assets)
+
+        async def worker() -> None:
+            page = await context.new_page()
+            try:
+                while True:
+                    queued = await queue.get()
+                    if queued is None:
+                        queue.task_done()
+                        return
+                    index, item = queued
+                    url = normalize_detail_url(str(item.get("url", "")))
+                    try:
+                        cached = get_cached(status_cache, url)
+                        if cached:
+                            result = {**result, **{k: v for k, v in cached.items() if k != "ts"}}
+                            results[index] = result
+                            queue.task_done()
+                            continue
+                        preflight = await asyncio.to_thread(http_prefilter, url)
+                        if preflight == "inactive":
+                            result.update({"status": "inactive", "reason": "http_prefilter"})
+                            put_cached(status_cache, url, result)
+                            results[index] = result
+                            queue.task_done()
+                            continue
+                        await wait_for_rate_limit(url)
+                        await page.goto(
+                            url,
+                            wait_until="domcontentloaded",
+                            timeout=args.timeout_ms,
+                        )
+                        await page.wait_for_timeout(300)
+                        body = await page.locator("body").inner_text(
+                            timeout=args.timeout_ms
+                        )
+                        if any(marker in body for marker in CHALLENGE_MARKERS):
+                            status = "unknown"
+                        elif any(
+                            marker in body
+                            for marker in (
+                                "物件已下架",
+                                "物件不存在",
+                                "查詢的物件不存在",
+                                "已成交",
+                            )
+                        ):
+                            status = "inactive"
+                        else:
+                            status = (
+                                "active"
+                                if re.search(r"[\d,]+\s*元\s*/\s*月", body)
+                                else "unknown"
+                            )
+                    except Exception:
                         status = "unknown"
-                    elif any(marker in body for marker in inactive_markers):
-                        status = "inactive"
-                    else:
-                        status = "active" if re.search(r"[\d,]+\s*元\s*/\s*月", body) else "unknown"
-                except Exception:
-                    status = "unknown"
-                results.append(
-                    {
+                    results[index] = {
                         "id": item.get("id"),
                         "source_property_id": item.get("source_property_id"),
                         "status": status,
                     }
-                )
-                time.sleep(args.verify_delay)
-        finally:
-            browser.close()
+                    put_cached(status_cache, url, results[index])
+                    queue.task_done()
+            finally:
+                await page.close()
+
+        worker_count = min(max(1, args.verify_workers), max(1, len(items)))
+        tasks = [asyncio.create_task(worker()) for _ in range(worker_count)]
+        for _ in tasks:
+            queue.put_nowait(None)
+        await queue.join()
+        await asyncio.gather(*tasks)
+        await context.close()
+        await browser.close()
+
+    save_status_cache(cache_path, status_cache)
+
+    return [item for item in results if item is not None]
+
+
+def verify_statuses(args: argparse.Namespace) -> Path:
+    if args.verify_input is None or not args.verify_input.is_file():
+        raise ValueError("verify-input must be an existing JSON file")
+    items = json.loads(args.verify_input.read_text(encoding="utf-8"))
+    if not isinstance(items, list):
+        raise ValueError("verify-input must contain a JSON array")
+    results = asyncio.run(_verify_status_items(args, items))
     output = args.verify_output or args.output_dir / "rental_status_verify.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(

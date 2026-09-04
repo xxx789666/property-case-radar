@@ -4,12 +4,17 @@ import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
 import json
+import logging
 import os
 from pathlib import Path
 import sys
 
 from crawlers.capture_retention import remove_expired_capture_json
 from crawlers.rental.base import RentalCrawler, RentalListing
+from apps.services.performance import measure_stage
+
+
+logger = logging.getLogger(__name__)
 
 
 class RentalCaptureError(RuntimeError):
@@ -58,33 +63,49 @@ class CapturedRentalCrawler(RentalCrawler):
             for value in self.focus_districts
             for argument in ("--focus-district", value)
         ]
-        process = await asyncio.create_subprocess_exec(
-            self.python_executable,
-            str(self.script_path),
-            "--output-dir", str(self.output_dir),
-            "--max-pages", str(self.max_pages),
-            "--other-max-pages", str(self.other_max_pages),
-            "--focus-max-pages", str(self.focus_max_pages),
-            "--workers", str(self.workers),
-            "--headless",
-            *(("--city", city) if city else ()),
-            *focus_args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), self.timeout_seconds)
-        except TimeoutError as exc:
-            process.kill()
-            await process.wait()
-            raise RentalCaptureError("rental capture timed out") from exc
+        source_name = f"591-rental:{city}" if city else "591-rental"
+        with measure_stage(logger, "retry" if city else "capture", source_name):
+            # Keep browser binaries on D: even when launched manually or by
+            # a Scheduled Task whose environment does not inherit the shell
+            # profile. This prevents Playwright falling back to C:.
+            browser_path = Path(__file__).resolve().parents[2] / ".runtime" / "playwright"
+            process = await asyncio.create_subprocess_exec(
+                self.python_executable,
+                str(self.script_path),
+                "--output-dir", str(self.output_dir),
+                "--max-pages", str(self.max_pages),
+                "--other-max-pages", str(self.other_max_pages),
+                "--focus-max-pages", str(self.focus_max_pages),
+                "--workers", str(self.workers),
+                "--headless",
+                *(("--city", city) if city else ()),
+                *focus_args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env={
+                    **os.environ,
+                    "PYTHONUTF8": "1",
+                    "PYTHONIOENCODING": "utf-8",
+                    "PLAYWRIGHT_BROWSERS_PATH": os.environ.get(
+                        "PLAYWRIGHT_BROWSERS_PATH", str(browser_path)
+                    ),
+                },
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), self.timeout_seconds
+                )
+            except TimeoutError as exc:
+                process.kill()
+                await process.wait()
+                raise RentalCaptureError("rental capture timed out") from exc
         stdout_text = stdout.decode("utf-8", errors="replace")
         if process.returncode:
             detail = stderr.decode("utf-8", errors="replace") or stdout_text
             raise RentalCaptureError(detail[-2000:])
         path = result_path(stdout_text)
-        return json.loads(path.read_text(encoding="utf-8"))
+        with measure_stage(logger, "parse", source_name):
+            return json.loads(path.read_text(encoding="utf-8"))
 
     @staticmethod
     def _listings_from_payload(payload: dict) -> list[RentalListing]:

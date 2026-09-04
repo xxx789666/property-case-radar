@@ -9,6 +9,7 @@ access-control page, that city is reported as failed and the run continues.
 from __future__ import annotations
 
 import argparse
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import json
 import re
@@ -18,9 +19,11 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
+from apps.services.status_prefilter import get_cached, http_prefilter, load_status_cache, put_cached, save_status_cache
 
 DEFAULT_OUTPUT_DIR = Path(r"D:\網頁識別認證\sale_json")
 DEFAULT_TIMEOUT_MS = 30_000
+BLOCKED_RESOURCE_TYPES = frozenset({"image", "media", "font"})
 REGIONS = {
     "臺北市": 1,
     "基隆市": 2,
@@ -66,7 +69,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verify-input", type=Path)
     parser.add_argument("--verify-output", type=Path)
     parser.add_argument("--verify-delay", type=float, default=0.5)
+    parser.add_argument("--verify-workers", type=int, default=4, choices=range(1, 9))
+    parser.add_argument("--status-cache", type=Path)
     return parser
+
+
+def block_unneeded_resources(route) -> None:
+    if route.request.resource_type in BLOCKED_RESOURCE_TYPES:
+        route.abort()
+    else:
+        route.continue_()
 
 
 def normalize_url(raw_url: str) -> str:
@@ -501,6 +513,7 @@ def capture_one_city(
                         timezone_id="Asia/Taipei",
                         viewport={"width": 1440, "height": 1200},
                     )
+                    context.route("**/*", block_unneeded_resources)
                     page = context.new_page()
                     try:
                         sale_listings: list[dict] = []
@@ -590,16 +603,10 @@ def capture(args: argparse.Namespace) -> Path:
     return output_path
 
 
-def verify_listing_statuses(args: argparse.Namespace) -> Path:
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as exc:
-        raise RuntimeError("playwright is required") from exc
-    if args.verify_input is None or not args.verify_input.is_file():
-        raise ValueError("verify-input must be an existing JSON file")
-    raw_items = json.loads(args.verify_input.read_text(encoding="utf-8"))
-    if not isinstance(raw_items, list):
-        raise ValueError("verify-input must contain a JSON array")
+async def _verify_listing_items(
+    args: argparse.Namespace, raw_items: list[object]
+) -> list[dict[str, object]]:
+    from playwright.async_api import async_playwright
 
     inactive_markers = (
         "很抱歉，您查詢的物件不存在",
@@ -610,66 +617,143 @@ def verify_listing_statuses(args: argparse.Namespace) -> Path:
         "物件找不到了",
     )
     challenge_markers = ("驗證碼", "存取遭拒", "Access Denied", "請完成驗證")
-    results: list[dict[str, object]] = []
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=args.headless)
-        try:
-            context = browser.new_context(
-                locale="zh-TW",
-                timezone_id="Asia/Taipei",
-                viewport={"width": 1440, "height": 1200},
+    cache_path = args.status_cache or (args.output_dir / "sale_status_cache.json")
+    status_cache = load_status_cache(cache_path)
+    results: list[dict[str, object] | None] = [None] * len(raw_items)
+    queue: asyncio.Queue[tuple[int, object] | None] = asyncio.Queue()
+    for index, raw in enumerate(raw_items):
+        queue.put_nowait((index, raw))
+    domain_locks: dict[str, asyncio.Lock] = {}
+    next_request_at: dict[str, float] = {}
+
+    async def wait_for_rate_limit(url: str) -> None:
+        domain = urlparse(url).netloc.lower()
+        lock = domain_locks.setdefault(domain, asyncio.Lock())
+        async with lock:
+            now = asyncio.get_running_loop().time()
+            delay = max(0.0, next_request_at.get(domain, 0.0) - now)
+            if delay:
+                await asyncio.sleep(delay)
+            next_request_at[domain] = asyncio.get_running_loop().time() + max(
+                0.0, args.verify_delay
             )
-            page = context.new_page()
-            for raw in raw_items:
-                if not isinstance(raw, dict):
-                    continue
-                database_id = raw.get("id")
-                source_property_id = str(raw.get("source_property_id", ""))
-                url = normalize_url(str(raw.get("url", "")))
-                result: dict[str, object] = {
-                    "id": database_id,
-                    "source_property_id": source_property_id,
-                    "url": url,
-                    "status": "unknown",
-                }
-                try:
-                    response = page.goto(
-                        url,
-                        wait_until="domcontentloaded",
-                        timeout=args.timeout_ms,
-                    )
-                    page.wait_for_timeout(750)
-                    body_text = " ".join(
-                        page.locator("body").inner_text(timeout=args.timeout_ms).split()
-                    )
-                    http_status = response.status if response is not None else None
-                    result["http_status"] = http_status
-                    if any(marker in body_text for marker in challenge_markers):
-                        result["reason"] = "access_control"
-                    elif (
-                        http_status in {404, 410}
-                        or any(marker in body_text for marker in inactive_markers)
-                    ):
-                        result["status"] = "inactive"
-                        result["reason"] = "listing_unavailable"
-                    elif (
-                        http_status == 200
-                        and source_property_id
-                        and f"S{source_property_id}" in body_text
-                        and page.locator("h1").count() > 0
-                    ):
-                        result["status"] = "active"
-                        result["reason"] = "listing_detail_present"
-                    else:
-                        result["reason"] = "unrecognized_page"
-                except Exception as exc:
-                    result["reason"] = f"verification_error:{type(exc).__name__}"
-                results.append(result)
-                if args.verify_delay > 0:
-                    time.sleep(args.verify_delay)
-            context.close()
-        finally:
-            browser.close()
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=args.headless)
+        context = await browser.new_context(
+            locale="zh-TW",
+            timezone_id="Asia/Taipei",
+            viewport={"width": 1440, "height": 1200},
+        )
+
+        async def route_assets(route) -> None:
+            if route.request.resource_type in BLOCKED_RESOURCE_TYPES:
+                await route.abort()
+            else:
+                await route.continue_()
+
+        await context.route("**/*", route_assets)
+
+        async def worker() -> None:
+            page = await context.new_page()
+            try:
+                while True:
+                    queued = await queue.get()
+                    if queued is None:
+                        queue.task_done()
+                        return
+                    index, raw = queued
+                    if not isinstance(raw, dict):
+                        queue.task_done()
+                        continue
+                    database_id = raw.get("id")
+                    source_property_id = str(raw.get("source_property_id", ""))
+                    url = normalize_url(str(raw.get("url", "")))
+                    result: dict[str, object] = {
+                        "id": database_id,
+                        "source_property_id": source_property_id,
+                        "url": url,
+                        "status": "unknown",
+                    }
+                    try:
+                        cached = get_cached(status_cache, url)
+                        if cached:
+                            result.update({k: v for k, v in cached.items() if k != "ts"})
+                            results[index] = result
+                            queue.task_done()
+                            continue
+                        preflight = await asyncio.to_thread(http_prefilter, url)
+                        if preflight == "inactive":
+                            result.update({"status": "inactive", "reason": "http_prefilter"})
+                            put_cached(status_cache, url, result)
+                            results[index] = result
+                            queue.task_done()
+                            continue
+                        await wait_for_rate_limit(url)
+                        response = await page.goto(
+                            url,
+                            wait_until="domcontentloaded",
+                            timeout=args.timeout_ms,
+                        )
+                        await page.wait_for_timeout(750)
+                        body_text = " ".join(
+                            (
+                                await page.locator("body").inner_text(
+                                    timeout=args.timeout_ms
+                                )
+                            ).split()
+                        )
+                        http_status = response.status if response is not None else None
+                        result["http_status"] = http_status
+                        if any(marker in body_text for marker in challenge_markers):
+                            result["reason"] = "access_control"
+                        elif (
+                            http_status in {404, 410}
+                            or any(marker in body_text for marker in inactive_markers)
+                        ):
+                            result["status"] = "inactive"
+                            result["reason"] = "listing_unavailable"
+                        elif (
+                            http_status == 200
+                            and source_property_id
+                            and f"S{source_property_id}" in body_text
+                            and await page.locator("h1").count() > 0
+                        ):
+                            result["status"] = "active"
+                            result["reason"] = "listing_detail_present"
+                        else:
+                            result["reason"] = "unrecognized_page"
+                    except Exception as exc:
+                        result["reason"] = (
+                            f"verification_error:{type(exc).__name__}"
+                        )
+                    results[index] = result
+                    put_cached(status_cache, url, result)
+                    queue.task_done()
+            finally:
+                await page.close()
+
+        worker_count = min(max(1, args.verify_workers), max(1, len(raw_items)))
+        tasks = [asyncio.create_task(worker()) for _ in range(worker_count)]
+        for _ in tasks:
+            queue.put_nowait(None)
+        await queue.join()
+        await asyncio.gather(*tasks)
+        await context.close()
+        await browser.close()
+
+    save_status_cache(cache_path, status_cache)
+
+    return [item for item in results if item is not None]
+
+
+def verify_listing_statuses(args: argparse.Namespace) -> Path:
+    if args.verify_input is None or not args.verify_input.is_file():
+        raise ValueError("verify-input must be an existing JSON file")
+    raw_items = json.loads(args.verify_input.read_text(encoding="utf-8"))
+    if not isinstance(raw_items, list):
+        raise ValueError("verify-input must contain a JSON array")
+    results = asyncio.run(_verify_listing_items(args, raw_items))
 
     verified_at = datetime.now().astimezone()
     output_path = args.verify_output or (

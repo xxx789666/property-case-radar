@@ -626,6 +626,9 @@ async def ingest_auction_announcements(
     repository = AuctionRepository(session)
     raw_announcements = await source.fetch()
     parsed_batch = [(raw, parser.parse(raw.raw_html, source_url=raw.source_url)) for raw in raw_announcements]
+    repository.preload_cases(
+        [(parsed.court_name, parsed.case_number) for _, parsed in parsed_batch]
+    )
     # Apply in chronological order (by each announcement's own 公告日期),
     # not crawl/fetch order -- the status-transition state machine's
     # from/to semantics only make sense walked forward in real time, and a

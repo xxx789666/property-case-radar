@@ -1,6 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "use_d_runtime.ps1")
 $logDirectory = Join-Path $repositoryRoot "logs"
 $logPath = Join-Path $logDirectory "database-backup.log"
 
@@ -13,7 +14,7 @@ $timestamp = Get-Date -Format "yyyy-MM-ddTHH:mm:ssK"
 
 $ErrorActionPreference = "Continue"
 $env:PYTHONUTF8 = "1"
-& "C:\Users\xx\AppData\Local\Programs\Python\Python313\python.exe" `
+& $RadarPythonExe `
     "scripts\backup_postgres.py" 2>&1 |
     Out-File -LiteralPath $logPath -Append -Encoding utf8
 

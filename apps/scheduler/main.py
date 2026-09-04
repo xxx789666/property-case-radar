@@ -27,6 +27,8 @@ from apps.services.rental_pipeline import ingest_rental_listings
 from apps.services.rental_status_lifecycle import reconcile_stale_rental_listings
 from apps.services.system_alerts import update_system_alert
 from apps.services.scheduler_job_recovery import SchedulerJobRecovery
+from apps.services.deferred_region_retries import DeferredRegionRetryScheduler
+from apps.services.performance import measure_stage
 from apps.scheduler.instance_lock import (
     SchedulerAlreadyRunning,
     scheduler_instance_lock,
@@ -199,7 +201,51 @@ def make_live_sale_job(
     settings: Settings,
     status_verifier: CapturedSaleStatusVerifier | None = None,
     additional_status_verifiers: tuple[tuple[str, object, int], ...] = (),
+    deferred_retries: DeferredRegionRetryScheduler | None = None,
 ) -> Callable[[], None]:
+    def run_deferred_sale_retry(
+        regions: tuple[str, ...], attempt: int
+    ) -> tuple[str, ...]:
+        async def retry_cycle() -> tuple[str, ...]:
+            sale_source = getattr(crawler, "sources", {}).get("591")
+            retry_method = getattr(sale_source, "retry_failed_cities", None)
+            if not callable(retry_method):
+                return regions
+            with factory() as session:
+                retry_listings = await retry_method(regions)
+                async with live_sale_notifier(settings) as notifier:
+                    if retry_listings:
+                        result = await ingest_sale_listings(
+                            _SaleListingBatchSource(retry_listings),
+                            session,
+                            notifier=notifier,
+                            notify_new=False,
+                            high_score_threshold=settings.sale_high_score_threshold,
+                            high_score_digest_limit=settings.sale_high_score_digest_limit,
+                        )
+                        logger.info(
+                            "deferred sale failed-city retry %s ingest finished: %s",
+                            attempt,
+                            result,
+                        )
+            unresolved = tuple(
+                getattr(sale_source, "last_failed_cities", regions)
+            )
+            update_system_alert(
+                settings,
+                key="sale-source:591",
+                failing=bool(unresolved),
+                title="售屋來源 591",
+                detail=(
+                    "延後重試後仍失敗：" + "、".join(unresolved)
+                    if unresolved
+                    else "失敗縣市延後補抓完成"
+                ),
+            )
+            return unresolved
+
+        return asyncio.run(retry_cycle())
+
     async def run_sale_cycle() -> None:
         with factory() as session:
             existing_source_count = session.scalar(
@@ -224,45 +270,65 @@ def make_live_sale_job(
                     getattr(sale_source, "last_failed_cities", ())
                 )
                 retry_method = getattr(sale_source, "retry_failed_cities", None)
+                deferred_retry_pending = False
                 if failed_cities and callable(retry_method):
-                    for retry_round in range(
-                        1, settings.sale_failed_retry_rounds + 1
-                    ):
-                        if not failed_cities:
-                            break
-                        logger.warning(
-                            "waiting %s minutes before sale failed-city retry %s/%s: %s",
-                            settings.sale_failed_retry_delay_minutes,
-                            retry_round,
-                            settings.sale_failed_retry_rounds,
-                            ", ".join(failed_cities),
+                    if deferred_retries is not None:
+                        deferred_retry_pending = deferred_retries.schedule(
+                            key="sale-591",
+                            regions=failed_cities,
+                            callback=run_deferred_sale_retry,
+                            delay_minutes=settings.sale_failed_retry_delay_minutes,
+                            max_attempts=settings.sale_failed_retry_rounds,
                         )
-                        await asyncio.sleep(
-                            settings.sale_failed_retry_delay_minutes * 60
-                        )
-                        retry_listings = await retry_method(failed_cities)
-                        if retry_listings:
-                            retry_result = await ingest_sale_listings(
-                                _SaleListingBatchSource(retry_listings),
-                                session,
-                                notifier=notifier if existing_source_count > 0 else None,
-                                notify_new=False,
-                                high_score_threshold=settings.sale_high_score_threshold,
-                                high_score_digest_limit=settings.sale_high_score_digest_limit,
+                        if deferred_retry_pending:
+                            update_system_alert(
+                                settings,
+                                key="sale-source:591",
+                                failing=True,
+                                title="售屋來源 591",
+                                detail="已排定延後補抓：" + "、".join(failed_cities),
                             )
-                            logger.info(
-                                "sale failed-city retry %s/%s ingest finished: %s",
+                    else:
+                        for retry_round in range(
+                        1, settings.sale_failed_retry_rounds + 1
+                        ):
+                            if not failed_cities:
+                                break
+                            logger.warning(
+                                "waiting %s minutes before sale failed-city retry %s/%s: %s",
+                                settings.sale_failed_retry_delay_minutes,
                                 retry_round,
                                 settings.sale_failed_retry_rounds,
-                                retry_result,
+                                ", ".join(failed_cities),
                             )
-                        failed_cities = tuple(
-                            getattr(sale_source, "last_failed_cities", ())
-                        )
+                            await asyncio.sleep(
+                                settings.sale_failed_retry_delay_minutes * 60
+                            )
+                            retry_listings = await retry_method(failed_cities)
+                            if retry_listings:
+                                retry_result = await ingest_sale_listings(
+                                    _SaleListingBatchSource(retry_listings),
+                                    session,
+                                    notifier=notifier if existing_source_count > 0 else None,
+                                    notify_new=False,
+                                    high_score_threshold=settings.sale_high_score_threshold,
+                                    high_score_digest_limit=settings.sale_high_score_digest_limit,
+                                )
+                                logger.info(
+                                    "sale failed-city retry %s/%s ingest finished: %s",
+                                    retry_round,
+                                    settings.sale_failed_retry_rounds,
+                                    retry_result,
+                                )
+                            failed_cities = tuple(
+                                getattr(sale_source, "last_failed_cities", ())
+                            )
 
                 failures = getattr(crawler, "last_failures", {})
                 if sale_source is not None:
-                    if failed_cities:
+                    if deferred_retry_pending:
+                        failures.pop("591", None)
+                    elif failed_cities:
                         failures["591"] = (
                             getattr(sale_source, "last_health_error", None)
                             or "591 部分縣市補抓仍失敗：" + "、".join(failed_cities)
@@ -270,11 +336,12 @@ def make_live_sale_job(
                     else:
                         failures.pop("591", None)
                 if notifier is not None and existing_source_count > 0:
-                    summary = await deliver_daily_sale_summary(
-                        session,
-                        notifier.new_channel,
-                        settings.discord_sale_new_channel_id,
-                    )
+                    with measure_stage(logger, "Discord", "sale-summary"):
+                        summary = await deliver_daily_sale_summary(
+                            session,
+                            notifier.new_channel,
+                            settings.discord_sale_new_channel_id,
+                        )
                     logger.info(
                         "sale daily summary delivery finished: %s",
                         summary,
@@ -283,6 +350,8 @@ def make_live_sale_job(
             # recovery now instead of waiting for the potentially hour-long
             # stale-listing verification below.
             for source_name in getattr(crawler, "sources", {}):
+                if source_name == "591" and deferred_retry_pending:
+                    continue
                 error = failures.get(source_name)
                 update_system_alert(
                     settings,
@@ -351,6 +420,7 @@ def make_live_rental_job(
     crawler: CapturedRentalCrawler,
     settings: Settings,
     status_verifier: CapturedRentalStatusVerifier | None = None,
+    deferred_retries: DeferredRegionRetryScheduler | None = None,
 ) -> Callable[[], None]:
     async def run_rental_cycle() -> None:
         with factory() as session:
@@ -393,12 +463,13 @@ def make_live_rental_job(
                 failed_cities = tuple(crawler.last_failed_cities)
                 summary = None
                 if notifier is not None and not baseline:
-                    summary = await deliver_daily_rental_summary(
-                        session,
-                        notifier.new_channel,
-                        settings.discord_rental_new_channel_id,
-                        failed_regions=failed_cities,
-                    )
+                    with measure_stage(logger, "Discord", "rental-summary"):
+                        summary = await deliver_daily_rental_summary(
+                            session,
+                            notifier.new_channel,
+                            settings.discord_rental_new_channel_id,
+                            failed_regions=(),
+                        )
                     logger.info("rental daily summary delivery finished: %s", summary)
 
                 retry_method = getattr(crawler, "retry_failed_cities", None)
@@ -411,70 +482,136 @@ def make_live_rental_job(
                         detail=crawler.last_health_error or "部分縣市抓取失敗／待重試",
                     )
                 if failed_cities and callable(retry_method):
-                    for retry_round in range(
-                        1, settings.rental_failed_retry_rounds + 1
-                    ):
-                        if not failed_cities:
-                            break
-                        logger.warning(
-                            "waiting %s minutes before rental failed-city retry %s/%s: %s",
-                            settings.rental_failed_retry_delay_minutes,
-                            retry_round,
-                            settings.rental_failed_retry_rounds,
-                            ", ".join(failed_cities),
+                    if deferred_retries is not None:
+                        def deferred_callback(
+                            regions: tuple[str, ...], attempt: int
+                        ) -> tuple[str, ...]:
+                            async def retry_cycle() -> tuple[str, ...]:
+                                with factory() as retry_session:
+                                    retry_listings = await retry_method(regions)
+                                    async with live_rental_notifier(settings) as retry_notifier:
+                                        if retry_listings:
+                                            retry_result = await ingest_rental_listings(
+                                                _RentalListingBatchSource(retry_listings),
+                                                retry_session,
+                                                notifier=(
+                                                    retry_notifier
+                                                    if not baseline
+                                                    else None
+                                                ),
+                                                notify_new=False,
+                                                backfill=baseline,
+                                                high_score_threshold=settings.rental_high_score_threshold,
+                                                high_score_digest_limit=settings.rental_high_score_digest_limit,
+                                            )
+                                            logger.info(
+                                                "deferred rental failed-city retry %s ingest finished: %s",
+                                                attempt,
+                                                retry_result,
+                                            )
+                                        unresolved = tuple(crawler.last_failed_cities)
+                                        if (
+                                            retry_notifier is not None
+                                            and summary is not None
+                                            and summary.message_id is not None
+                                        ):
+                                            await update_daily_rental_summary(
+                                                retry_session,
+                                                retry_notifier.new_channel,
+                                                summary.message_id,
+                                                day=summary.day,
+                                                failed_regions=(),
+                                            )
+                                update_system_alert(
+                                    settings,
+                                    key="rental-source:591",
+                                    failing=bool(unresolved),
+                                    title="租屋來源 591",
+                                    detail=(
+                                        "延後重試後仍失敗：" + "、".join(unresolved)
+                                        if unresolved
+                                        else "失敗縣市延後補抓完成"
+                                    ),
+                                )
+                                return unresolved
+
+                            return asyncio.run(retry_cycle())
+
+                        deferred_retries.schedule(
+                            key="rental-591",
+                            regions=failed_cities,
+                            callback=deferred_callback,
+                            delay_minutes=settings.rental_failed_retry_delay_minutes,
+                            max_attempts=settings.rental_failed_retry_rounds,
                         )
-                        await asyncio.sleep(
-                            settings.rental_failed_retry_delay_minutes * 60
-                        )
-                        retry_listings = await retry_method(failed_cities)
-                        if retry_listings:
-                            retry_result = await ingest_rental_listings(
-                                _RentalListingBatchSource(retry_listings),
-                                session,
-                                notifier=notifier if not baseline else None,
-                                notify_new=False,
-                                backfill=baseline,
-                                high_score_threshold=(
-                                    settings.rental_high_score_threshold
-                                ),
-                                high_score_digest_limit=(
-                                    settings.rental_high_score_digest_limit
-                                ),
-                            )
-                            logger.info(
-                                "rental failed-city retry %s/%s ingest finished: %s",
-                                retry_round,
-                                settings.rental_failed_retry_rounds,
-                                retry_result,
-                            )
-                        failed_cities = tuple(crawler.last_failed_cities)
-                        if (
-                            notifier is not None
-                            and not baseline
-                            and summary is not None
-                            and summary.message_id is not None
+                    else:
+                        for retry_round in range(
+                            1, settings.rental_failed_retry_rounds + 1
                         ):
-                            update_report = await update_daily_rental_summary(
-                                session,
-                                notifier.new_channel,
-                                summary.message_id,
-                                day=summary.day,
-                                failed_regions=failed_cities,
-                            )
-                            logger.info(
-                                "rental daily summary updated after retry %s/%s: %s",
+                            if not failed_cities:
+                                break
+                            logger.warning(
+                                "waiting %s minutes before rental failed-city retry %s/%s: %s",
+                                settings.rental_failed_retry_delay_minutes,
                                 retry_round,
                                 settings.rental_failed_retry_rounds,
-                                update_report,
+                                ", ".join(failed_cities),
                             )
+                            await asyncio.sleep(
+                                settings.rental_failed_retry_delay_minutes * 60
+                            )
+                            retry_listings = await retry_method(failed_cities)
+                            if retry_listings:
+                                retry_result = await ingest_rental_listings(
+                                    _RentalListingBatchSource(retry_listings),
+                                    session,
+                                    notifier=notifier if not baseline else None,
+                                    notify_new=False,
+                                    backfill=baseline,
+                                    high_score_threshold=settings.rental_high_score_threshold,
+                                    high_score_digest_limit=settings.rental_high_score_digest_limit,
+                                )
+                                logger.info(
+                                    "rental failed-city retry %s/%s ingest finished: %s",
+                                    retry_round,
+                                    settings.rental_failed_retry_rounds,
+                                    retry_result,
+                                )
+                            failed_cities = tuple(crawler.last_failed_cities)
+                            if (
+                                notifier is not None
+                                and not baseline
+                                and summary is not None
+                                and summary.message_id is not None
+                            ):
+                                update_report = await update_daily_rental_summary(
+                                    session,
+                                    notifier.new_channel,
+                                    summary.message_id,
+                                    day=summary.day,
+                                    failed_regions=(),
+                                )
+                                logger.info(
+                                    "rental daily summary updated after retry %s/%s: %s",
+                                    retry_round,
+                                    settings.rental_failed_retry_rounds,
+                                    update_report,
+                                )
             if status_verifier is not None:
                 try:
                     for source in ("591-rent", "591-business"):
+                        verify_limit = (
+                            settings.rental_business_status_verify_limit
+                            if source == "591-business"
+                            else settings.rental_status_verify_limit
+                        )
+                        if verify_limit == 0:
+                            continue
                         status_result = await reconcile_stale_rental_listings(
                             session,
                             status_verifier,
                             missing_days=settings.rental_status_missing_days,
-                            limit=settings.rental_status_verify_limit,
+                            limit=verify_limit,
                             source=source,
                         )
                         logger.info(
@@ -550,7 +687,14 @@ def make_auction_job(
 
     async def run_auction_cycle() -> None:
         with factory() as session:
-            result = await ingest_auction_announcements(source, parser, session, liquidity_index=liquidity_index)
+            with measure_stage(logger, "ingest", "auction") as measurement:
+                result = await ingest_auction_announcements(
+                    source,
+                    parser,
+                    session,
+                    liquidity_index=liquidity_index,
+                )
+                measurement.items = result.processed
             logger.info("auction crawl finished: %s", result)
             if notifier is not None:
                 report = await deliver_pending_notifications(session, notifier, liquidity_index=liquidity_index)
@@ -569,6 +713,7 @@ def make_live_auction_job(
     settings: Settings,
     *,
     liquidity_index: float = 0.5,
+    deferred_retries: DeferredRegionRetryScheduler | None = None,
 ) -> Callable[[], None]:
     """Production auction job: ingest+queue, then attempt delivery through
     a real (or explicitly logged-and-disabled) Discord notifier built
@@ -587,7 +732,14 @@ def make_live_auction_job(
 
     async def run_auction_cycle() -> None:
         with factory() as session:
-            result = await ingest_auction_announcements(source, parser, session, liquidity_index=liquidity_index)
+            with measure_stage(logger, "ingest", "auction") as measurement:
+                result = await ingest_auction_announcements(
+                    source,
+                    parser,
+                    session,
+                    liquidity_index=liquidity_index,
+                )
+                measurement.items = result.processed
             logger.info("auction crawl finished: %s", result)
             failed_regions = tuple(getattr(source, "last_failed_counties", ()))
             if failed_regions:
@@ -600,12 +752,13 @@ def make_live_auction_job(
             round_three_summary_report = None
             async with live_auction_notifier(settings) as notifier:
                 if notifier is not None:
-                    summary_report = await deliver_daily_auction_summary(
-                        session,
-                        notifier.new_channel,
-                        settings.discord_auction_new_channel_id,
-                        failed_regions=failed_regions,
-                    )
+                    with measure_stage(logger, "Discord", "auction-summary"):
+                        summary_report = await deliver_daily_auction_summary(
+                            session,
+                            notifier.new_channel,
+                            settings.discord_auction_new_channel_id,
+                            failed_regions=failed_regions,
+                        )
                     logger.info("auction daily summary delivery finished: %s", summary_report)
                     round_two_summary_report = await deliver_daily_auction_summary(
                         session,
@@ -659,6 +812,89 @@ def make_live_auction_job(
                 (round_two_summary_report, "round", 2),
                 (round_three_summary_report, "round", 3),
             )
+
+            if deferred_retries is not None:
+                def deferred_callback(
+                    regions: tuple[str, ...], attempt: int
+                ) -> tuple[str, ...]:
+                    async def retry_cycle() -> tuple[str, ...]:
+                        with factory() as retry_session:
+                            retry_announcements = await retry_method(regions)
+                            if retry_announcements:
+                                retry_result = await ingest_auction_announcements(
+                                    _RawAnnouncementBatchSource(retry_announcements),
+                                    parser,
+                                    retry_session,
+                                    liquidity_index=liquidity_index,
+                                )
+                                logger.info(
+                                    "deferred auction failed-county retry %s ingest finished: %s",
+                                    attempt,
+                                    retry_result,
+                                )
+                            unresolved = tuple(
+                                getattr(source, "last_failed_counties", ())
+                            )
+                            async with live_auction_notifier(settings) as retry_notifier:
+                                if retry_notifier is not None:
+                                    for prior_report, channel_kind, round_number in summary_reports:
+                                        if (
+                                            prior_report is None
+                                            or prior_report.message_id is None
+                                        ):
+                                            continue
+                                        channel = (
+                                            retry_notifier.new_channel
+                                            if channel_kind == "new"
+                                            else retry_notifier.round_channel
+                                        )
+                                        await update_daily_auction_summary(
+                                            retry_session,
+                                            channel,
+                                            prior_report.message_id,
+                                            day=prior_report.day,
+                                            round_number=round_number,
+                                            failed_regions=unresolved,
+                                        )
+                                    await deliver_pending_notifications(
+                                        retry_session,
+                                        retry_notifier,
+                                        liquidity_index=liquidity_index,
+                                    )
+                                    await deliver_pending_subscription_notifications(
+                                        retry_session,
+                                        retry_notifier.subscription_channel,
+                                    )
+                        update_system_alert(
+                            settings,
+                            key="auction-failed-counties",
+                            failing=bool(unresolved),
+                            title="法拍縣市抓取",
+                            detail=(
+                                "延後重試後仍失敗：" + "、".join(unresolved)
+                                if unresolved
+                                else "失敗縣市延後補抓完成"
+                            ),
+                        )
+                        return unresolved
+
+                    return asyncio.run(retry_cycle())
+
+                deferred_retries.schedule(
+                    key="auction-counties",
+                    regions=failed_regions,
+                    callback=deferred_callback,
+                    delay_minutes=settings.auction_failed_retry_delay_minutes,
+                    max_attempts=settings.auction_failed_retry_rounds,
+                )
+                update_system_alert(
+                    settings,
+                    key="auction-failed-counties",
+                    failing=True,
+                    title="法拍縣市抓取",
+                    detail="已排定延後補抓：" + "、".join(failed_regions),
+                )
+                return
 
             for retry_round in range(1, settings.auction_failed_retry_rounds + 1):
                 if not failed_regions:
@@ -768,6 +1004,7 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO)
     settings = get_settings()
+    deferred_retries = DeferredRegionRetryScheduler()
     engine = create_db_engine(settings.database_url)
     factory = create_session_factory(engine)
     market_source = MoiActualPriceSource(
@@ -801,8 +1038,12 @@ def main() -> None:
             factory,
             CompositeSaleCrawler(sale_sources),
             settings,
-            CapturedSaleStatusVerifier(settings.sale_capture_script),
+            CapturedSaleStatusVerifier(
+                settings.sale_capture_script,
+                workers=settings.sale_status_verify_workers,
+            ),
             additional_status_verifiers,
+            deferred_retries,
         )
     rental_job: Callable[[], None] | None = None
     if settings.rental_capture_enabled:
@@ -819,7 +1060,11 @@ def main() -> None:
             factory,
             rental_crawler,
             settings,
-            CapturedRentalStatusVerifier(settings.rental_capture_script),
+            CapturedRentalStatusVerifier(
+                settings.rental_capture_script,
+                workers=settings.rental_status_verify_workers,
+            ),
+            deferred_retries,
         )
     auction_job: Callable[[], None] | None = None
     if settings.auction_capture_enabled:
@@ -839,6 +1084,7 @@ def main() -> None:
             auction_source,
             MojEstateDetailParser(),
             settings,
+            deferred_retries=deferred_retries,
         )
     scheduler = build_production_scheduler(
         make_market_sync_job(factory, market_source),
@@ -855,6 +1101,7 @@ def main() -> None:
         rental_daily_hour=settings.rental_scheduler_daily_hour,
         rental_daily_minute=settings.rental_scheduler_daily_minute,
     )
+    deferred_retries.bind(scheduler)
     attach_failure_alerts(scheduler, settings)
     logger.info(
         "scheduler started; market source=official MOI current sales Open Data; "

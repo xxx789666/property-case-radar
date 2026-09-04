@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import Select, desc, select
+from sqlalchemy import Select, desc, select, tuple_
 from sqlalchemy.orm import Session, selectinload
 
 from database.models.auction import (
@@ -55,6 +55,19 @@ class AuctionSearchFilters:
 class AuctionRepository:
     def __init__(self, session: Session):
         self.session = session
+        self._prefetched: dict[tuple[str, str], AuctionCase] = {}
+
+    def preload_cases(self, keys: list[tuple[str, str]]) -> None:
+        if not keys:
+            return
+        self._prefetched = {
+            (case.court_name, case.case_number): case
+            for case in self.session.scalars(
+                select(AuctionCase)
+                .options(*_EAGER_LOAD)
+                .where(tuple_(AuctionCase.court_name, AuctionCase.case_number).in_(keys))
+            )
+        }
 
     def add(self, case: AuctionCase) -> AuctionCase:
         self.session.add(case)
@@ -65,6 +78,9 @@ class AuctionRepository:
         return self.session.scalar(select(AuctionCase).options(*_EAGER_LOAD).where(AuctionCase.id == case_id))
 
     def get_by_case_number(self, court_name: str, case_number: str) -> AuctionCase | None:
+        cached = self._prefetched.get((court_name, case_number))
+        if cached is not None:
+            return cached
         return self.session.scalar(
             select(AuctionCase)
             .options(*_EAGER_LOAD)

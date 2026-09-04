@@ -1,6 +1,8 @@
 $ErrorActionPreference = "Stop"
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "use_d_runtime.ps1")
+& (Join-Path $PSScriptRoot "run_postgres.ps1")
 $logDirectory = Join-Path $repositoryRoot "logs"
 $logPath = Join-Path $logDirectory "scheduler.log"
 
@@ -17,7 +19,7 @@ $env:PYTHONIOENCODING = "utf-8"
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = $utf8NoBom
 $OutputEncoding = $utf8NoBom
-& "C:\Users\xx\AppData\Local\Programs\Python\Python313\python.exe" `
+& $RadarPythonExe `
     -m apps.scheduler.main 2>&1 |
     Out-File -LiteralPath $logPath -Append -Encoding utf8
 

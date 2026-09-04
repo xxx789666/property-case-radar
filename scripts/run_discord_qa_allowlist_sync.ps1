@@ -1,6 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "use_d_runtime.ps1")
 $runtimeDir = Join-Path $repoRoot "openab\.runtime"
 $localDir = Join-Path $repoRoot "openab\.local"
 $logDir = Join-Path $repoRoot "logs"
@@ -14,7 +15,7 @@ $logFile = Join-Path $logDir "discord-qa-allowlist-sync.log"
 $gatewayTask = "Property Case Radar OpenAB Gateway"
 
 New-Item -ItemType Directory -Force $runtimeDir,$logDir | Out-Null
-$output = & python -X utf8 $syncScript `
+$output = & $RadarPythonExe -X utf8 $syncScript `
     --token-file $tokenSecret `
     --role-id-file $roleIdFile `
     --allowlist-file $allowlistFile `

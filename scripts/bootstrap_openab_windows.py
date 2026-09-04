@@ -16,7 +16,7 @@ LOCAL_DIR = REPO_ROOT / "openab" / ".local"
 BOT_TOKEN_SOURCE = Path(r"D:\bot.txt")
 OPENAB_APPLICATION_ID = "1530136356439719997"
 TOKEN_PATTERN = re.compile(r"([A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{20,})")
-PSQL = Path(r"C:\Program Files\PostgreSQL\17\bin\psql.exe")
+PSQL = Path(r"D:\PostgreSQL\17\bin\psql.exe")
 
 
 def _select_openab_token() -> str:
@@ -43,7 +43,7 @@ def _bootstrap_database(password: str) -> None:
         "-h",
         "127.0.0.1",
         "-p",
-        "5432",
+        "15432",
         "-U",
         "postgres",
         "-d",
@@ -86,7 +86,7 @@ def main() -> int:
         username="radar_agent_ro",
         password=role_password,
         host="127.0.0.1",
-        port=5432,
+        port=15432,
         database="radar",
     ).render_as_string(hide_password=False)
     db_path.write_text(database_url, encoding="utf-8")
